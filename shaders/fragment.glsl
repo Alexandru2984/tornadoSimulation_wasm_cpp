@@ -9,9 +9,10 @@ out vec4 FragColor;
 uniform vec3 uTint;
 uniform vec3 uCamPos;
 uniform float uOpacity;
-uniform int uObjType; // 0=default,1=house,2=tree,3=ground,4=tornado
+uniform int uObjType; // 0=default,1=house,2=tree,3=ground,4=tornado,5=debris
 uniform int uHasAlbedo;
 uniform sampler2D uAlbedo;
+uniform float uLightningFlash;
 
 void main() {
     vec3 N = normalize(vNormal);
@@ -20,7 +21,7 @@ void main() {
     vec3 lightDir = normalize(vec3(-0.6, -1.0, -0.3));
     float diff = max(dot(N, -lightDir), 0.0);
     float spec = pow(max(dot(reflect(lightDir, N), V), 0.0), 24.0) * 0.28; // softer, less bright spec
-    vec3 ambient = 0.12 * (vCol * (uTint * 0.95));
+    vec3 ambient = (0.12 + uLightningFlash * 0.6) * (vCol * (uTint * 0.95));
     vec3 diffuse = 1.0 * diff * (vCol * (uTint * 0.95));
     vec3 final = ambient + diffuse + spec;
     // if textured, modulate by texture albedo
@@ -73,6 +74,10 @@ void main() {
         float gr = fract(vWorldPos.x * 0.1) * fract(vWorldPos.z * 0.1);
         outCol = mix(vec3(0.12,0.38,0.18), vec3(0.08,0.32,0.14), gr) * (vCol * uTint);
         outAlpha = clamp(1.0 * uOpacity, 0.95, 1.0);
+    } else if (uObjType == 5) {
+        // debris: simple lit piece, tinted, fading
+        outCol = final;
+        outAlpha = uOpacity;
     } else {
         // default: tornado path
         float fres = pow(1.0 - max(dot(N, V), 0.0), 1.6);

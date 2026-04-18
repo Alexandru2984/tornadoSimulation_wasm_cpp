@@ -62,13 +62,36 @@ static const float PULL_INNER      = 1.5f;
 static const float PULL_OUTER      = 0.5f;
 static const float VEL_DAMPING     = 2.0f;
 
+// Destruction
+static const int   MAX_DEBRIS          = 300;
+static const float DESTRUCTION_RADIUS  = 2.5f;
+static const float DAMAGE_RATE         = 0.8f;
+static const int   DEBRIS_PER_HOUSE    = 40;
+static const float DEBRIS_LIFETIME     = 5.0f;
+
+// Weather
+static const int   MAX_RAIN            = 4000;
+static const float RAIN_AREA           = 30.0f;
+static const float RAIN_HEIGHT         = 15.0f;
+static const float RAIN_SPEED          = 8.0f;
+static const float LIGHTNING_MIN_INTERVAL = 2.0f;
+static const float LIGHTNING_MAX_INTERVAL = 7.0f;
+static const float LIGHTNING_DECAY       = 8.0f;
+
 // Uniform location caches
 struct MainUniforms {
     GLint proj=-1, view=-1, model=-1, normalMat=-1, time=-1, camPos=-1;
     GLint enableSwirl=-1, tint=-1, opacity=-1, objType=-1, hasAlbedo=-1, albedo=-1;
+    GLint lightningFlash=-1, windBend=-1, windSource=-1;
 };
 struct ParticleUniforms {
     GLint proj=-1, view=-1, model=-1, color=-1, pointScale=-1;
+};
+struct SkyUniforms {
+    GLint lightningFlash=-1, time=-1;
+};
+struct RainUniforms {
+    GLint proj=-1, view=-1;
 };
 
 // ── Structs ──────────────────────────────────────────────────────────
@@ -91,6 +114,32 @@ struct Particle { glm::vec3 pos; glm::vec3 vel; float life; };
 struct Vertex   { glm::vec3 pos; glm::vec3 normal; glm::vec3 col; };
 
 struct SimpleModel { GLuint vao = 0, vbo = 0, ebo = 0; GLsizei indexCount = 0; };
+
+struct DestructibleHouse {
+    glm::vec3 pos;
+    float health = 1.0f;
+    bool destroyed = false;
+};
+
+struct Debris {
+    glm::vec3 pos;
+    glm::vec3 vel;
+    float rotAngle;
+    glm::vec3 rotAxis;
+    float angVel;
+    float life;
+    float size;
+    int colorType; // 0=brick, 1=wood, 2=roof
+};
+
+struct LightningState {
+    float nextFlash = 3.0f;
+    float intensity = 0.0f;
+};
+
+struct RainParticle {
+    glm::vec3 pos;
+};
 
 // All state that main_loop() needs, collected in one place so both
 // main() and main_loop() can access it.
@@ -123,6 +172,24 @@ struct AppState {
     // Uniform location caches
     MainUniforms mu;
     ParticleUniforms pu;
+    SkyUniforms su;
+    RainUniforms ru;
+
+    // Destruction
+    std::vector<DestructibleHouse> houses;
+    std::vector<Debris> debrisPieces;
+    SimpleModel debrisCube;
+
+    // Weather
+    LightningState lightning;
+    std::vector<RainParticle> rainDrops;
+    GLuint rainVAO = 0, rainVBO = 0;
+    std::vector<float> rainBuf;
+
+    // Sky
+    GLuint skyVAO = 0;
+    GLuint skyProgram = 0;
+    GLuint rainProgram = 0;
 
     // Particles
     GLuint particleVAO = 0, particleVBO = 0;
@@ -243,6 +310,39 @@ static void respawnParticle(Particle& p, bool inner) {
     p.life = inner ? (0.4f + rnd01(rng)*1.2f) : (0.8f + rnd01(rng)*2.0f);
 }
 
+// ── Rain respawn ─────────────────────────────────────────────────────
+static void respawnRain(RainParticle& r, const glm::vec3& camPos) {
+    auto& rng   = app.rng;
+    auto& rnd01 = app.rnd01;
+    r.pos.x = camPos.x + (rnd01(rng) - 0.5f) * RAIN_AREA;
+    r.pos.y = RAIN_HEIGHT + rnd01(rng) * 5.0f;
+    r.pos.z = camPos.z + (rnd01(rng) - 0.5f) * RAIN_AREA;
+}
+
+// ── Spawn debris from destroyed position ─────────────────────────────
+static void spawnDebris(const glm::vec3& pos, int count) {
+    auto& rng   = app.rng;
+    auto& rnd01 = app.rnd01;
+    for (int i = 0; i < count && (int)app.debrisPieces.size() < MAX_DEBRIS; ++i) {
+        Debris d;
+        d.pos = pos + glm::vec3((rnd01(rng)-0.5f)*1.2f,
+                                 rnd01(rng)*1.0f,
+                                (rnd01(rng)-0.5f)*1.2f);
+        d.vel = glm::vec3((rnd01(rng)-0.5f)*4.0f,
+                           3.0f + rnd01(rng)*5.0f,
+                          (rnd01(rng)-0.5f)*4.0f);
+        d.rotAxis = glm::normalize(glm::vec3(rnd01(rng)-0.5f,
+                                              rnd01(rng)-0.5f,
+                                              rnd01(rng)-0.5f));
+        d.rotAngle = rnd01(rng) * 6.28f;
+        d.angVel   = (rnd01(rng)-0.5f) * 10.0f;
+        d.life     = DEBRIS_LIFETIME * (0.5f + rnd01(rng)*0.5f);
+        d.size     = 0.06f + rnd01(rng) * 0.14f;
+        d.colorType = (int)(rnd01(rng) * 3.0f) % 3;
+        app.debrisPieces.push_back(d);
+    }
+}
+
 // ── GLFW callback ────────────────────────────────────────────────────
 static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
     int w, h;
@@ -270,6 +370,69 @@ static void main_loop() {
     // -- Tornado follows mouse smoothly --
     glm::vec2 target(g_mouseX * 2.5f, g_mouseY * -1.0f * 2.5f);
     s.tornadoPos = s.tornadoPos * 0.92f + target * 0.08f;
+
+    // ── Destruction: damage houses near tornado ──
+    for (auto& h : s.houses) {
+        if (h.destroyed) continue;
+        float dist = glm::length(glm::vec2(h.pos.x - s.tornadoPos.x,
+                                            h.pos.z - s.tornadoPos.y));
+        if (dist < DESTRUCTION_RADIUS) {
+            h.health -= DAMAGE_RATE * dt;
+            if (h.health <= 0.0f) {
+                h.destroyed = true;
+                spawnDebris(h.pos, DEBRIS_PER_HOUSE);
+            }
+        }
+    }
+
+    // ── Debris physics ──
+    for (auto it = s.debrisPieces.begin(); it != s.debrisPieces.end(); ) {
+        Debris& d = *it;
+        d.vel.y -= 9.8f * dt; // gravity
+        // Vortex forces
+        glm::vec3 toCenter = glm::vec3(s.tornadoPos.x, d.pos.y, s.tornadoPos.y) - d.pos;
+        float dist = glm::length(glm::vec2(toCenter.x, toCenter.z));
+        glm::vec3 tangent(-toCenter.z, 0, toCenter.x);
+        if (dist > 0.01f) tangent /= dist;
+        d.vel += tangent * 2.5f * dt;
+        d.vel.y += 2.0f * dt;
+        if (dist > 0.1f)
+            d.vel += glm::normalize(glm::vec3(toCenter.x, 0, toCenter.z)) * 1.2f * dt;
+        d.vel *= (1.0f - 1.2f * dt);
+        d.pos += d.vel * dt;
+        d.rotAngle += d.angVel * dt;
+        // Ground bounce
+        if (d.pos.y < 0.0f) {
+            d.pos.y = 0.0f;
+            d.vel.y = -d.vel.y * 0.3f;
+            d.vel.x *= 0.7f; d.vel.z *= 0.7f;
+            d.angVel *= 0.7f;
+        }
+        d.life -= dt;
+        if (d.life <= 0.0f) { it = s.debrisPieces.erase(it); }
+        else { ++it; }
+    }
+
+    // ── Lightning ──
+    s.lightning.nextFlash -= dt;
+    if (s.lightning.nextFlash <= 0.0f) {
+        s.lightning.intensity = 0.7f + s.rnd01(s.rng) * 0.3f;
+        s.lightning.nextFlash = LIGHTNING_MIN_INTERVAL +
+            s.rnd01(s.rng) * (LIGHTNING_MAX_INTERVAL - LIGHTNING_MIN_INTERVAL);
+    }
+    s.lightning.intensity *= expf(-LIGHTNING_DECAY * dt);
+    if (s.lightning.intensity < 0.01f) s.lightning.intensity = 0.0f;
+
+    // ── Rain ──
+    glm::vec2 windDir = glm::length(s.tornadoPos) > 0.01f
+        ? glm::normalize(s.tornadoPos) * 0.3f
+        : glm::vec2(0.1f, 0.0f);
+    for (auto& r : s.rainDrops) {
+        r.pos.y -= RAIN_SPEED * dt;
+        r.pos.x += windDir.x * dt * 3.0f + (s.rnd01(s.rng) - 0.5f) * 0.02f;
+        r.pos.z += windDir.y * dt * 3.0f;
+        if (r.pos.y < 0.0f) respawnRain(r, s.camera.pos);
+    }
 
     // -- Camera: mouse-look (RMB) --
     if (glfwGetMouseButton(s.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
@@ -306,8 +469,16 @@ static void main_loop() {
     glfwGetFramebufferSize(s.window, &width, &height);
     if (width == 0 || height == 0) return;
     glViewport(0, 0, width, height);
-    glClearColor(0.18f, 0.22f, 0.45f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // ── Storm sky (fullscreen, behind everything) ──
+    glDisable(GL_DEPTH_TEST);
+    glUseProgram(s.skyProgram);
+    glUniform1f(s.su.lightningFlash, s.lightning.intensity);
+    glUniform1f(s.su.time, t);
+    glBindVertexArray(s.skyVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glEnable(GL_DEPTH_TEST);
 
     float aspect = (float)width / (float)height;
     glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 200.0f);
@@ -327,6 +498,9 @@ static void main_loop() {
     glUniformMatrix4fv(mu.view, 1, GL_FALSE, glm::value_ptr(view));
     glUniform1f(mu.time, t);
     glUniform3fv(mu.camPos, 1, glm::value_ptr(s.camera.pos));
+    glUniform1f(mu.lightningFlash, s.lightning.intensity);
+    glUniform1f(mu.windBend, 0.0f);
+    glUniform3f(mu.windSource, s.tornadoPos.x, 0.0f, s.tornadoPos.y);
 
     // -- Ground --
     {
@@ -353,16 +527,23 @@ static void main_loop() {
         glBindTexture(GL_TEXTURE_2D, s.brickTex);
         glUniform1i(mu.albedo, 0);
 
-        static const glm::vec3 housePos[] = {
-            {-5,0,-3}, {4,0,-6}, {-7,0,5}, {6,0,4}
-        };
-        for (const auto& hp : housePos) {
-            glm::mat4 model = glm::scale(
-                glm::translate(glm::mat4(1.0f), hp), glm::vec3(1.5f));
+        for (auto& h : s.houses) {
+            if (h.destroyed) continue;
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), h.pos);
+            // Shake when damaged
+            if (h.health < 1.0f) {
+                float shake = (1.0f - h.health) * 0.12f;
+                model = glm::translate(model, glm::vec3(
+                    (s.rnd01(s.rng)-0.5f)*shake, 0.0f,
+                    (s.rnd01(s.rng)-0.5f)*shake));
+            }
+            model = glm::scale(model, glm::vec3(1.5f));
             glm::mat3 nm = normalMat3(model);
             glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
             glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
-            glUniform3f(mu.tint, 1.0f, 0.95f, 0.9f);
+            // Tint reddish when damaged
+            float dmg = 1.0f - h.health;
+            glUniform3f(mu.tint, 1.0f, 0.95f - dmg*0.3f, 0.9f - dmg*0.4f);
             glBindVertexArray(s.house.vao);
             glDrawElements(GL_TRIANGLES, s.house.indexCount, GL_UNSIGNED_INT, nullptr);
         }
@@ -374,6 +555,8 @@ static void main_loop() {
         glUniform1i(mu.hasAlbedo, 1);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, s.leafTex);
+
+        glUniform1f(mu.windBend, 1.5f);
 
         static const glm::vec3 treePos[] = {
             {-3,0,-5}, {3,0,-4}, {-6,0,2}, {5,0,6}, {-2,0,7}, {8,0,-2}
@@ -388,6 +571,7 @@ static void main_loop() {
             glBindVertexArray(s.tree.vao);
             glDrawElements(GL_TRIANGLES, s.tree.indexCount, GL_UNSIGNED_INT, nullptr);
         }
+        glUniform1f(mu.windBend, 0.0f);
     }
 
     // -- glTF models (if loaded) --
@@ -442,6 +626,34 @@ static void main_loop() {
         glUniform1i(mu.hasAlbedo, 0);
         glBindVertexArray(s.tornadoVAO);
         glDrawElements(GL_TRIANGLES, s.tornadoIndexCount, GL_UNSIGNED_INT, nullptr);
+    }
+
+    // -- 3D debris pieces --
+    if (!s.debrisPieces.empty() && s.debrisCube.vao) {
+        glUniform1i(mu.objType, 5);
+        glUniform1f(mu.enableSwirl, 0.0f);
+        glUniform1i(mu.hasAlbedo, 0);
+
+        for (const auto& d : s.debrisPieces) {
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), d.pos);
+            model = glm::rotate(model, d.rotAngle, d.rotAxis);
+            model = glm::scale(model, glm::vec3(d.size));
+            glm::mat3 nm = normalMat3(model);
+            glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+
+            glm::vec3 tint;
+            if (d.colorType == 0) tint = glm::vec3(0.8f, 0.4f, 0.3f);       // brick
+            else if (d.colorType == 1) tint = glm::vec3(0.6f, 0.4f, 0.2f);   // wood
+            else tint = glm::vec3(0.4f, 0.25f, 0.2f);                          // roof
+            glUniform3fv(mu.tint, 1, glm::value_ptr(tint));
+
+            float alpha = glm::clamp(d.life / 1.0f, 0.0f, 1.0f);
+            glUniform1f(mu.opacity, alpha);
+
+            glBindVertexArray(s.debrisCube.vao);
+            glDrawElements(GL_TRIANGLES, s.debrisCube.indexCount, GL_UNSIGNED_INT, nullptr);
+        }
     }
 
     // ════════════════════════════════
@@ -512,6 +724,28 @@ static void main_loop() {
     glDrawArrays(GL_POINTS, INNER_PARTICLES, MAX_PARTICLES - INNER_PARTICLES);
 
     glBindVertexArray(0);
+
+    // ════════════════════════════════
+    // RAIN — upload + draw as point sprites
+    // ════════════════════════════════
+    if (!s.rainDrops.empty()) {
+        for (int i = 0; i < MAX_RAIN; ++i) {
+            s.rainBuf[i*4+0] = s.rainDrops[i].pos.x;
+            s.rainBuf[i*4+1] = s.rainDrops[i].pos.y;
+            s.rainBuf[i*4+2] = s.rainDrops[i].pos.z;
+            s.rainBuf[i*4+3] = 1.0f;
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, s.rainVBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0,
+                        (GLsizeiptr)(s.rainBuf.size() * sizeof(float)), s.rainBuf.data());
+
+        glUseProgram(s.rainProgram);
+        glUniformMatrix4fv(s.ru.proj, 1, GL_FALSE, glm::value_ptr(proj));
+        glUniformMatrix4fv(s.ru.view, 1, GL_FALSE, glm::value_ptr(view));
+        glBindVertexArray(s.rainVAO);
+        glDrawArrays(GL_POINTS, 0, MAX_RAIN);
+        glBindVertexArray(0);
+    }
 
     // -- FPS counter --
     s.fpsFrames++;
@@ -599,6 +833,40 @@ int main() {
     glDeleteShader(pvsi); glDeleteShader(pfsi);
     if (!app.particleProgram) { std::cerr << "Particle shader program failed.\n"; return -1; }
 
+    // ── Load & compile sky shaders ──
+    {
+        std::string svs = loadFile("shaders/sky_vertex.glsl");
+        std::string sfs = loadFile("shaders/sky_fragment.glsl");
+        if (svs.empty() || sfs.empty()) {
+            svs = loadFile("../shaders/sky_vertex.glsl");
+            sfs = loadFile("../shaders/sky_fragment.glsl");
+        }
+        svs = adaptShaderSource(svs, false);
+        sfs = adaptShaderSource(sfs, true);
+        GLuint sv = compileShader(GL_VERTEX_SHADER, svs.c_str());
+        GLuint sf = compileShader(GL_FRAGMENT_SHADER, sfs.c_str());
+        app.skyProgram = linkProgram(sv, sf);
+        glDeleteShader(sv); glDeleteShader(sf);
+        if (!app.skyProgram) { std::cerr << "Sky shader program failed.\n"; return -1; }
+    }
+
+    // ── Load & compile rain shaders ──
+    {
+        std::string rvs = loadFile("shaders/rain_vertex.glsl");
+        std::string rfs = loadFile("shaders/rain_fragment.glsl");
+        if (rvs.empty() || rfs.empty()) {
+            rvs = loadFile("../shaders/rain_vertex.glsl");
+            rfs = loadFile("../shaders/rain_fragment.glsl");
+        }
+        rvs = adaptShaderSource(rvs, false);
+        rfs = adaptShaderSource(rfs, true);
+        GLuint rv = compileShader(GL_VERTEX_SHADER, rvs.c_str());
+        GLuint rf = compileShader(GL_FRAGMENT_SHADER, rfs.c_str());
+        app.rainProgram = linkProgram(rv, rf);
+        glDeleteShader(rv); glDeleteShader(rf);
+        if (!app.rainProgram) { std::cerr << "Rain shader program failed.\n"; return -1; }
+    }
+
     // ── Cache uniform locations ──
     {
         GLuint p = app.program;
@@ -615,6 +883,9 @@ int main() {
         m.objType     = glGetUniformLocation(p, "uObjType");
         m.hasAlbedo   = glGetUniformLocation(p, "uHasAlbedo");
         m.albedo      = glGetUniformLocation(p, "uAlbedo");
+        m.lightningFlash = glGetUniformLocation(p, "uLightningFlash");
+        m.windBend    = glGetUniformLocation(p, "uWindBend");
+        m.windSource  = glGetUniformLocation(p, "uWindSource");
     }
     {
         GLuint p = app.particleProgram;
@@ -624,6 +895,18 @@ int main() {
         u.model      = glGetUniformLocation(p, "uModel");
         u.color      = glGetUniformLocation(p, "uColor");
         u.pointScale = glGetUniformLocation(p, "uPointScale");
+    }
+    // Sky shader uniforms
+    {
+        GLuint p = app.skyProgram;
+        app.su.lightningFlash = glGetUniformLocation(p, "uLightningFlash");
+        app.su.time           = glGetUniformLocation(p, "uTime");
+    }
+    // Rain shader uniforms
+    {
+        GLuint p = app.rainProgram;
+        app.ru.proj = glGetUniformLocation(p, "uProj");
+        app.ru.view = glGetUniformLocation(p, "uView");
     }
 
     // ══════════════════════════════════════
@@ -897,6 +1180,91 @@ int main() {
     }
 
     // ══════════════════════════════════════
+    // Sky — empty VAO for fullscreen triangle via gl_VertexID
+    // ══════════════════════════════════════
+    glGenVertexArrays(1, &app.skyVAO);
+
+    // ══════════════════════════════════════
+    // Debris cube (unit cube for tumbling debris pieces)
+    // ══════════════════════════════════════
+    {
+        struct DV { glm::vec3 p; glm::vec3 n; };
+        std::vector<DV> dv;
+        std::vector<unsigned int> di;
+        auto addFace = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d,
+                            glm::vec3 n) {
+            unsigned int base = (unsigned int)dv.size();
+            dv.push_back({a, n}); dv.push_back({b, n}); dv.push_back({c, n}); dv.push_back({d, n});
+            di.push_back(base); di.push_back(base+1); di.push_back(base+2);
+            di.push_back(base); di.push_back(base+2); di.push_back(base+3);
+        };
+        float h = 0.5f;
+        glm::vec3 v[8] = {
+            {-h,-h,-h},{h,-h,-h},{h,-h,h},{-h,-h,h},
+            {-h, h,-h},{h, h,-h},{h, h,h},{-h, h,h}
+        };
+        addFace(v[3],v[2],v[1],v[0], { 0,-1, 0});
+        addFace(v[4],v[5],v[6],v[7], { 0, 1, 0});
+        addFace(v[0],v[1],v[5],v[4], { 0, 0,-1});
+        addFace(v[1],v[2],v[6],v[5], { 1, 0, 0});
+        addFace(v[2],v[3],v[7],v[6], { 0, 0, 1});
+        addFace(v[3],v[0],v[4],v[7], {-1, 0, 0});
+
+        glGenVertexArrays(1, &app.debrisCube.vao);
+        glGenBuffers(1, &app.debrisCube.vbo);
+        glGenBuffers(1, &app.debrisCube.ebo);
+        glBindVertexArray(app.debrisCube.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, app.debrisCube.vbo);
+        glBufferData(GL_ARRAY_BUFFER, dv.size()*sizeof(DV), dv.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app.debrisCube.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, di.size()*sizeof(unsigned int), di.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(DV),(void*)offsetof(DV,p));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(DV),(void*)offsetof(DV,n));
+        glVertexAttrib3f(2, 0.7f, 0.7f, 0.7f); // default vertex color
+        glBindVertexArray(0);
+        app.debrisCube.indexCount = (GLsizei)di.size();
+    }
+
+    // ══════════════════════════════════════
+    // Initialize destructible houses
+    // ══════════════════════════════════════
+    {
+        glm::vec3 housePositions[] = {
+            {-5,0,-3}, {4,0,-6}, {-7,0,5}, {6,0,4}
+        };
+        for (const auto& hp : housePositions) {
+            DestructibleHouse dh;
+            dh.pos = hp;
+            dh.health = 1.0f;
+            dh.destroyed = false;
+            app.houses.push_back(dh);
+        }
+    }
+
+    // ══════════════════════════════════════
+    // Rain particles + VAO/VBO
+    // ══════════════════════════════════════
+    {
+        app.rainDrops.resize(MAX_RAIN);
+        app.rainBuf.resize(MAX_RAIN * 4);
+        glm::vec3 startCam = app.camera.pos;
+        for (auto& r : app.rainDrops) respawnRain(r, startCam);
+
+        glGenVertexArrays(1, &app.rainVAO);
+        glGenBuffers(1, &app.rainVBO);
+        glBindVertexArray(app.rainVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, app.rainVBO);
+        glBufferData(GL_ARRAY_BUFFER, MAX_RAIN * 4 * sizeof(float), nullptr, GL_STREAM_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void*)(3*sizeof(float)));
+        glBindVertexArray(0);
+    }
+
+    // ══════════════════════════════════════
     // glTF models (optional)
     // ══════════════════════════════════════
     {
@@ -956,14 +1324,20 @@ int main() {
     glDeleteVertexArrays(1, &app.groundVAO);
     if (app.house.vao) { glDeleteBuffers(1,&app.house.vbo); glDeleteBuffers(1,&app.house.ebo); glDeleteVertexArrays(1,&app.house.vao); }
     if (app.tree.vao)  { glDeleteBuffers(1,&app.tree.vbo);  glDeleteBuffers(1,&app.tree.ebo);  glDeleteVertexArrays(1,&app.tree.vao);  }
+    if (app.debrisCube.vao) { glDeleteBuffers(1,&app.debrisCube.vbo); glDeleteBuffers(1,&app.debrisCube.ebo); glDeleteVertexArrays(1,&app.debrisCube.vao); }
     glDeleteBuffers(1, &app.particleVBO);
     glDeleteVertexArrays(1, &app.particleVAO);
+    glDeleteBuffers(1, &app.rainVBO);
+    glDeleteVertexArrays(1, &app.rainVAO);
+    glDeleteVertexArrays(1, &app.skyVAO);
     glDeleteTextures(1, &app.brickTex);
     glDeleteTextures(1, &app.leafTex);
     // glTF models
     if (app.boxModel.vao)  { glDeleteBuffers(1,&app.boxModel.vbo); glDeleteBuffers(1,&app.boxModel.ebo); glDeleteVertexArrays(1,&app.boxModel.vao); if (app.boxModel.texture) glDeleteTextures(1,&app.boxModel.texture); }
     if (app.avocadoModel.vao) { glDeleteBuffers(1,&app.avocadoModel.vbo); glDeleteBuffers(1,&app.avocadoModel.ebo); glDeleteVertexArrays(1,&app.avocadoModel.vao); if (app.avocadoModel.texture) glDeleteTextures(1,&app.avocadoModel.texture); }
     glDeleteProgram(app.particleProgram);
+    glDeleteProgram(app.skyProgram);
+    glDeleteProgram(app.rainProgram);
     glDeleteProgram(app.program);
     glfwDestroyWindow(window);
     glfwTerminate();

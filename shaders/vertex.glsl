@@ -16,6 +16,8 @@ uniform mat4 uModel;
 uniform float uTime;
 uniform float uEnableSwirl;
 uniform mat3 uNormalMat;
+uniform float uWindBend;
+uniform vec3 uWindSource;
 
 void main() {
     float height = aPos.y;
@@ -30,6 +32,18 @@ void main() {
         float pulse = 1.0 + 0.05 * sin(uTime * 6.0 + height * 8.0);
         p.x *= pulse;
         p.z *= pulse;
+    }
+
+    // Wind bending (for trees near tornado)
+    if (uWindBend > 0.0) {
+        vec3 objOrigin = (uModel * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        vec3 toWind = uWindSource - objOrigin;
+        float dist = length(toWind.xz);
+        float bendStrength = uWindBend / (1.0 + dist * 0.3);
+        vec3 bendDir = vec3(0.0);
+        if (dist > 0.01) bendDir = normalize(vec3(toWind.x, 0.0, toWind.z));
+        float hf = max(p.y, 0.0);
+        p.xyz += bendDir * bendStrength * hf * 0.15;
     }
 
     vec4 worldPos = uModel * vec4(p, 1.0);
