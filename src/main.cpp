@@ -95,6 +95,28 @@ static const int   CARS_PER_CHUNK        = 1;
 static const int   POLES_PER_CHUNK       = 2;
 static const int   MAX_SCORCH_MARKS      = 200;
 
+// Tornado decay (shrinks when idle)
+static const float TORNADO_DECAY_RATE    = 0.03f;  // per second
+static const float TORNADO_MIN_SCALE     = 0.4f;   // smallest possible
+static const float TORNADO_DECAY_GRACE   = 2.0f;   // seconds after last destroy before decay starts
+
+// Wave system
+static const int   TOTAL_WAVES           = 10;
+static const float WAVE_ANNOUNCE_TIME    = 3.0f;    // seconds to show "WAVE X"
+static const int   WAVE_BASE_TARGET      = 5;       // wave 1 target = 5 destroys
+
+// Power-ups
+static const int   MAX_POWERUPS          = 3;       // max on map
+static const float POWERUP_SPAWN_INTERVAL = 8.0f;   // seconds between spawn tries
+static const float POWERUP_COLLECT_RADIUS = 2.5f;
+static const float POWERUP_DURATION       = 6.0f;   // seconds (for timed effects)
+static const float POWERUP_BOB_SPEED      = 3.0f;
+static const float POWERUP_BOB_HEIGHT     = 0.3f;
+
+// Minimap
+static const float MINIMAP_RADIUS        = 60.0f;   // world-space range
+static const float MINIMAP_NDC_SIZE      = 0.22f;   // screen fraction
+
 // Uniform location caches
 struct MainUniforms {
     GLint proj=-1, view=-1, model=-1, normalMat=-1, time=-1, camPos=-1;
@@ -191,6 +213,33 @@ struct Score {
     int totalDestroyed  = 0;
 };
 
+// Game state machine
+enum class GamePhase { PLAYING, WAVE_ANNOUNCE, VICTORY, GAME_OVER };
+
+// Wave definition
+struct Wave {
+    int number      = 1;
+    int target      = 5;     // destroys needed to advance
+    int destroyed   = 0;     // current wave progress
+    float timer     = 0.0f;  // time in this wave
+    float announceTimer = 0.0f;
+};
+
+// Power-up types
+enum class PowerUpType { SPEED_BOOST, SIZE_DOUBLE, MAGNET, SHIELD };
+struct PowerUp {
+    glm::vec3 pos;
+    PowerUpType type;
+    float spawnTime = 0.0f;
+    bool collected = false;
+};
+
+// Active power-up effect
+struct ActivePowerUp {
+    PowerUpType type;
+    float remaining = 0.0f;
+};
+
 // Track which chunks are currently loaded
 struct ChunkKey {
     int x, z;
@@ -240,6 +289,20 @@ struct AppState {
     // Score & tornado growth
     Score score;
     float tornadoScale = 1.0f;
+    float lastDestroyTime = 0.0f;  // for decay grace period
+
+    // Wave system
+    GamePhase gamePhase = GamePhase::WAVE_ANNOUNCE;
+    Wave wave;
+    float victoryTimer = 0.0f;
+
+    // Power-ups
+    std::vector<PowerUp> powerUps;
+    std::vector<ActivePowerUp> activePowerUps;
+    float powerUpSpawnTimer = 5.0f; // first spawn after 5s
+
+    // Sound state
+    bool soundInitialized = false;
 
     // Destruction
     std::vector<DestructibleHouse> houses;
@@ -579,6 +642,186 @@ static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
     g_mouseY = -((ypos / (double)h) * 2.0 - 1.0);
 }
 
+// ── Sound effects (Web Audio API via Emscripten) ─────────────────────
+#ifdef PLATFORM_EMSCRIPTEN
+
+EM_JS(void, js_initSound, (), {
+    if (window._tornadoAudio) return;
+    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+    window._tornadoAudio = {ctx: ctx, windGain: null};
+    var bufSize = ctx.sampleRate * 2;
+    var buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < bufSize; i++) d[i] = Math.random() * 2 - 1;
+    var src = ctx.createBufferSource();
+    src.buffer = buf; src.loop = true;
+    var bp = ctx.createBiquadFilter();
+    bp.type = "bandpass"; bp.frequency.value = 300; bp.Q.value = 0.5;
+    var gain = ctx.createGain(); gain.gain.value = 0.15;
+    src.connect(bp); bp.connect(gain); gain.connect(ctx.destination);
+    src.start();
+    window._tornadoAudio.windGain = gain;
+    window._tornadoAudio.windFilter = bp;
+});
+
+EM_JS(void, js_playDestroySound, (), {
+    var a = window._tornadoAudio; if (!a) return;
+    var ctx = a.ctx;
+    var len = (ctx.sampleRate * 0.3)|0;
+    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < len; i++) {
+        var env = 1.0 - i / len;
+        d[i] = (Math.random() * 2 - 1) * env * env;
+    }
+    var src = ctx.createBufferSource(); src.buffer = buf;
+    var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 400;
+    var g = ctx.createGain(); g.gain.value = 0.35;
+    src.connect(lp); lp.connect(g); g.connect(ctx.destination);
+    src.start();
+});
+
+EM_JS(void, js_playPowerUpSound, (), {
+    var a = window._tornadoAudio; if (!a) return;
+    var ctx = a.ctx;
+    var osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(400, ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(900, ctx.currentTime + 0.15);
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(0.25, ctx.currentTime);
+    g.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.2);
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.2);
+});
+
+EM_JS(void, js_playWaveSound, (), {
+    var a = window._tornadoAudio; if (!a) return;
+    var ctx = a.ctx;
+    var freqs = [330, 440, 550];
+    for (var i = 0; i < 3; i++) {
+        var osc = ctx.createOscillator();
+        osc.type = "square";
+        osc.frequency.value = freqs[i];
+        var g = ctx.createGain();
+        g.gain.setValueAtTime(0, ctx.currentTime + i*0.12);
+        g.gain.linearRampToValueAtTime(0.15, ctx.currentTime + i*0.12 + 0.03);
+        g.gain.linearRampToValueAtTime(0, ctx.currentTime + i*0.12 + 0.3);
+        osc.connect(g); g.connect(ctx.destination);
+        osc.start(ctx.currentTime + i*0.12);
+        osc.stop(ctx.currentTime + i*0.12 + 0.3);
+    }
+});
+
+EM_JS(void, js_playThunderSound, (), {
+    var a = window._tornadoAudio; if (!a) return;
+    var ctx = a.ctx;
+    var len = (ctx.sampleRate * 1.5)|0;
+    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < len; i++) {
+        var env = Math.exp(-3.0 * i / len);
+        d[i] = (Math.random() * 2 - 1) * env;
+    }
+    var src = ctx.createBufferSource(); src.buffer = buf;
+    var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 200;
+    var g = ctx.createGain(); g.gain.value = 0.4;
+    src.connect(lp); lp.connect(g); g.connect(ctx.destination);
+    src.start();
+});
+
+EM_JS(void, js_updateWindVolume, (float scale), {
+    var a = window._tornadoAudio; if (!a || !a.windGain) return;
+    a.windGain.gain.value = 0.1 + scale * 0.12;
+    a.windFilter.frequency.value = 200 + scale * 150;
+});
+
+EM_JS(void, js_playVictorySound, (), {
+    var a = window._tornadoAudio; if (!a) return;
+    var ctx = a.ctx;
+    var notes = [523, 659, 784, 1047];
+    for (var i = 0; i < notes.length; i++) {
+        var osc = ctx.createOscillator();
+        osc.type = "sine"; osc.frequency.value = notes[i];
+        var g = ctx.createGain();
+        g.gain.setValueAtTime(0, ctx.currentTime + i*0.2);
+        g.gain.linearRampToValueAtTime(0.2, ctx.currentTime + i*0.2 + 0.05);
+        g.gain.linearRampToValueAtTime(0, ctx.currentTime + i*0.2 + 0.5);
+        osc.connect(g); g.connect(ctx.destination);
+        osc.start(ctx.currentTime + i*0.2);
+        osc.stop(ctx.currentTime + i*0.2 + 0.5);
+    }
+});
+
+EM_JS(void, js_saveScore, (int score, int wave), {
+    try {
+        var key = "tornado3d_scores";
+        var scores = JSON.parse(localStorage.getItem(key) || "[]");
+        scores.push({score: score, wave: wave, date: new Date().toLocaleDateString()});
+        scores.sort(function(a,b) { return b.score - a.score; });
+        if (scores.length > 10) scores = scores.slice(0, 10);
+        localStorage.setItem(key, JSON.stringify(scores));
+    } catch(e) {}
+});
+
+EM_JS(int, js_getHighScore, (), {
+    try {
+        var scores = JSON.parse(localStorage.getItem("tornado3d_scores") || "[]");
+        return scores.length > 0 ? scores[0].score : 0;
+    } catch(e) { return 0; }
+});
+
+#endif // PLATFORM_EMSCRIPTEN
+
+static void initSound() {
+#ifdef PLATFORM_EMSCRIPTEN
+    js_initSound();
+    app.soundInitialized = true;
+#endif
+}
+static void playDestroySound() {
+#ifdef PLATFORM_EMSCRIPTEN
+    js_playDestroySound();
+#endif
+}
+static void playPowerUpSound() {
+#ifdef PLATFORM_EMSCRIPTEN
+    js_playPowerUpSound();
+#endif
+}
+static void playWaveSound() {
+#ifdef PLATFORM_EMSCRIPTEN
+    js_playWaveSound();
+#endif
+}
+static void playThunderSound() {
+#ifdef PLATFORM_EMSCRIPTEN
+    js_playThunderSound();
+#endif
+}
+static void updateWindVolume(float tornadoScale) {
+#ifdef PLATFORM_EMSCRIPTEN
+    js_updateWindVolume(tornadoScale);
+#endif
+}
+static void playVictorySound() {
+#ifdef PLATFORM_EMSCRIPTEN
+    js_playVictorySound();
+#endif
+}
+static void saveScore(int score, int wave) {
+#ifdef PLATFORM_EMSCRIPTEN
+    js_saveScore(score, wave);
+#endif
+}
+static int getHighScore() {
+#ifdef PLATFORM_EMSCRIPTEN
+    return js_getHighScore();
+#else
+    return 0;
+#endif
+}
+
 // ═════════════════════════════════════════════════════════════════════
 // main_loop — called every frame by the browser (Emscripten) or by
 //             the while-loop (desktop).
@@ -627,19 +870,111 @@ static void main_loop() {
         }
     }
 
+    // ── Initialize sound on first frame (needs user gesture context) ──
+    if (!s.soundInitialized) initSound();
+
+    // ── Wave system logic ──
+    if (s.gamePhase == GamePhase::WAVE_ANNOUNCE) {
+        s.wave.announceTimer += dt;
+        if (s.wave.announceTimer >= WAVE_ANNOUNCE_TIME) {
+            s.gamePhase = GamePhase::PLAYING;
+            s.wave.announceTimer = 0.0f;
+        }
+    }
+
+    // ── Tornado decay (shrinks when idle) ──
+    bool hasShield = false;
+    for (auto& ap : s.activePowerUps)
+        if (ap.type == PowerUpType::SHIELD) hasShield = true;
+
+    if (s.gamePhase == GamePhase::PLAYING && !hasShield) {
+        float timeSinceDestroy = t - s.lastDestroyTime;
+        if (timeSinceDestroy > TORNADO_DECAY_GRACE) {
+            s.tornadoScale -= TORNADO_DECAY_RATE * dt;
+            if (s.tornadoScale < TORNADO_MIN_SCALE) {
+                s.tornadoScale = TORNADO_MIN_SCALE;
+            }
+        }
+    }
+
+    // ── Update active power-ups ──
+    float speedMult = 1.0f;
+    float sizeMult  = 1.0f;
+    bool hasMagnet = false;
+    for (auto it = s.activePowerUps.begin(); it != s.activePowerUps.end();) {
+        it->remaining -= dt;
+        if (it->remaining <= 0.0f) {
+            it = s.activePowerUps.erase(it);
+        } else {
+            if (it->type == PowerUpType::SPEED_BOOST) speedMult = 1.8f;
+            if (it->type == PowerUpType::SIZE_DOUBLE) sizeMult  = 2.0f;
+            if (it->type == PowerUpType::MAGNET)      hasMagnet = true;
+            ++it;
+        }
+    }
+
+    // ── Power-up spawning ──
+    if (s.gamePhase == GamePhase::PLAYING) {
+        s.powerUpSpawnTimer -= dt;
+        if (s.powerUpSpawnTimer <= 0.0f && (int)s.powerUps.size() < MAX_POWERUPS) {
+            s.powerUpSpawnTimer = POWERUP_SPAWN_INTERVAL;
+            // Spawn near player but not too close
+            float angle = s.rnd01(s.rng) * 6.28f;
+            float dist  = 15.0f + s.rnd01(s.rng) * 25.0f;
+            PowerUp pu;
+            pu.pos = glm::vec3(s.camera.pos.x + cosf(angle) * dist,
+                               0.5f,
+                               s.camera.pos.z + sinf(angle) * dist);
+            pu.type = (PowerUpType)((int)(s.rnd01(s.rng) * 4.0f) % 4);
+            pu.spawnTime = t;
+            s.powerUps.push_back(pu);
+        }
+    }
+
+    // ── Power-up collection ──
+    for (auto it = s.powerUps.begin(); it != s.powerUps.end();) {
+        if (it->collected) { ++it; continue; }
+        float dist = glm::length(glm::vec2(it->pos.x - s.tornadoPos.x,
+                                            it->pos.z - s.tornadoPos.y));
+        float collectR = POWERUP_COLLECT_RADIUS * s.tornadoScale;
+        if (hasMagnet) collectR *= 3.0f;
+        if (dist < collectR) {
+            ActivePowerUp ap;
+            ap.type = it->type;
+            ap.remaining = POWERUP_DURATION;
+            s.activePowerUps.push_back(ap);
+            playPowerUpSound();
+            it = s.powerUps.erase(it);
+        } else {
+            // Magnet: pull power-ups toward tornado
+            if (hasMagnet && dist < collectR * 2.0f) {
+                glm::vec2 dir = glm::normalize(s.tornadoPos - glm::vec2(it->pos.x, it->pos.z));
+                it->pos.x += dir.x * 8.0f * dt;
+                it->pos.z += dir.y * 8.0f * dt;
+            }
+            ++it;
+        }
+    }
+
+    // ── Update wind sound based on tornado size ──
+    updateWindVolume(s.tornadoScale);
+
     // ── Destruction: damage houses near tornado ──
-    float effectiveRadius = DESTRUCTION_RADIUS * s.tornadoScale;
+    float effectiveRadius = DESTRUCTION_RADIUS * s.tornadoScale * sizeMult;
+    bool destroyedSomething = false;
     for (auto& h : s.houses) {
         if (h.destroyed) continue;
         float dist = glm::length(glm::vec2(h.pos.x - s.tornadoPos.x,
                                             h.pos.z - s.tornadoPos.y));
         if (dist < effectiveRadius) {
-            h.health -= DAMAGE_RATE * dt;
+            h.health -= DAMAGE_RATE * speedMult * dt;
             if (h.health <= 0.0f) {
                 h.destroyed = true;
                 spawnDebris(h.pos, DEBRIS_PER_HOUSE);
                 s.score.housesDestroyed++;
                 s.score.totalDestroyed++;
+                s.wave.destroyed++;
+                destroyedSomething = true;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ, TORNADO_MAX_SCALE);
                 if ((int)s.scorchMarks.size() < MAX_SCORCH_MARKS)
                     s.scorchMarks.push_back({h.pos, 1.5f});
@@ -653,12 +988,14 @@ static void main_loop() {
         float dist = glm::length(glm::vec2(tr.pos.x - s.tornadoPos.x,
                                             tr.pos.z - s.tornadoPos.y));
         if (dist < effectiveRadius) {
-            tr.health -= DAMAGE_RATE * 1.5f * dt; // trees break faster
+            tr.health -= DAMAGE_RATE * 1.5f * speedMult * dt;
             if (tr.health <= 0.0f) {
                 tr.destroyed = true;
                 spawnDebris(tr.pos, DEBRIS_PER_TREE);
                 s.score.treesDestroyed++;
                 s.score.totalDestroyed++;
+                s.wave.destroyed++;
+                destroyedSomething = true;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.5f, TORNADO_MAX_SCALE);
             }
         }
@@ -670,16 +1007,42 @@ static void main_loop() {
         float dist = glm::length(glm::vec2(pr.pos.x - s.tornadoPos.x,
                                             pr.pos.z - s.tornadoPos.y));
         if (dist < effectiveRadius) {
-            float rate = (pr.propType == 1) ? DAMAGE_RATE * 0.8f : DAMAGE_RATE * 3.0f; // cars tougher
-            pr.health -= rate * dt;
+            float rate = (pr.propType == 1) ? DAMAGE_RATE * 0.8f : DAMAGE_RATE * 3.0f;
+            pr.health -= rate * speedMult * dt;
             if (pr.health <= 0.0f) {
                 pr.destroyed = true;
                 int debrisCount = (pr.propType == 1) ? 25 : 8;
                 spawnDebris(pr.pos, debrisCount);
                 s.score.propsDestroyed++;
                 s.score.totalDestroyed++;
+                s.wave.destroyed++;
+                destroyedSomething = true;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.3f, TORNADO_MAX_SCALE);
             }
+        }
+    }
+
+    // ── Post-destruction: sounds, wave check ──
+    if (destroyedSomething) {
+        s.lastDestroyTime = t;
+        playDestroySound();
+    }
+
+    // Wave completion check
+    if (s.gamePhase == GamePhase::PLAYING &&
+        s.wave.destroyed >= s.wave.target) {
+        if (s.wave.number >= TOTAL_WAVES) {
+            s.gamePhase = GamePhase::VICTORY;
+            s.victoryTimer = 0.0f;
+            playVictorySound();
+            saveScore(s.score.totalDestroyed, s.wave.number);
+        } else {
+            s.wave.number++;
+            s.wave.target = WAVE_BASE_TARGET + (s.wave.number - 1) * 3;
+            s.wave.destroyed = 0;
+            s.wave.announceTimer = 0.0f;
+            s.gamePhase = GamePhase::WAVE_ANNOUNCE;
+            playWaveSound();
         }
     }
 
@@ -726,6 +1089,7 @@ static void main_loop() {
         s.lightning.intensity = 0.7f + s.rnd01(s.rng) * 0.3f;
         s.lightning.nextFlash = LIGHTNING_MIN_INTERVAL +
             s.rnd01(s.rng) * (LIGHTNING_MAX_INTERVAL - LIGHTNING_MIN_INTERVAL);
+        playThunderSound();
     }
     s.lightning.intensity *= expf(-LIGHTNING_DECAY * dt);
     if (s.lightning.intensity < 0.01f) s.lightning.intensity = 0.0f;
@@ -942,6 +1306,41 @@ static void main_loop() {
         }
     }
 
+    // -- Power-ups (floating, glowing cubes) --
+    if (!s.powerUps.empty()) {
+        glUniform1i(mu.objType, 5);
+        glUniform1f(mu.enableSwirl, 0.0f);
+        glUniform1i(mu.hasAlbedo, 0);
+
+        for (const auto& pu : s.powerUps) {
+            if (pu.collected) continue;
+            // Per-type color
+            glm::vec3 puColor(1.0f);
+            switch (pu.type) {
+                case PowerUpType::SPEED_BOOST: puColor = glm::vec3(0.2f, 1.0f, 0.3f); break; // green
+                case PowerUpType::SIZE_DOUBLE: puColor = glm::vec3(1.0f, 0.3f, 0.8f); break; // pink
+                case PowerUpType::MAGNET:      puColor = glm::vec3(0.3f, 0.5f, 1.0f); break; // blue
+                case PowerUpType::SHIELD:      puColor = glm::vec3(1.0f, 0.9f, 0.2f); break; // gold
+            }
+            float bob = sinf(t * POWERUP_BOB_SPEED + pu.spawnTime * 3.0f) * POWERUP_BOB_HEIGHT;
+            float spin = t * 2.0f + pu.spawnTime;
+            glm::mat4 model = glm::translate(glm::mat4(1.0f),
+                                  glm::vec3(pu.pos.x, 0.8f + bob, pu.pos.z));
+            model = glm::rotate(model, spin, glm::vec3(0, 1, 0));
+            model = glm::scale(model, glm::vec3(0.35f));
+            glm::mat3 nm = normalMat3(model);
+            glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+            // Pulse glow
+            float pulse = 0.7f + 0.3f * sinf(t * 5.0f + pu.spawnTime);
+            glUniform3f(mu.tint, puColor.x * pulse, puColor.y * pulse, puColor.z * pulse);
+            glUniform1f(mu.opacity, 0.85f);
+            glBindVertexArray(s.debrisCube.vao);
+            glDrawElements(GL_TRIANGLES, s.debrisCube.indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+        glUniform1f(mu.opacity, 1.0f);
+    }
+
     // -- Scorch marks on ground --
     if (!s.scorchMarks.empty()) {
         glUniform1i(mu.objType, 3);
@@ -1136,21 +1535,16 @@ static void main_loop() {
     }
 
     // ════════════════════════════════
-    // HUD — score overlay
+    // HUD — score, wave, power-ups, minimap, overlays
     // ════════════════════════════════
     {
         glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glUseProgram(s.hudProgram);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, s.fontTex);
         glUniform1i(s.hu.fontTex, 0);
-
-        // Build HUD text lines
-        char line1[64], line2[64], line3[64];
-        snprintf(line1, sizeof(line1), "DESTROYED: %d", s.score.totalDestroyed);
-        snprintf(line2, sizeof(line2), "H:%d T:%d P:%d",
-                 s.score.housesDestroyed, s.score.treesDestroyed, s.score.propsDestroyed);
-        snprintf(line3, sizeof(line3), "TORNADO x%.1f", s.tornadoScale);
 
         // Render function: each char is a textured quad
         auto renderLine = [&](const char* text, float startX, float startY,
@@ -1161,12 +1555,10 @@ static void main_loop() {
             for (const char* c = text; *c; ++c) {
                 int ch = (int)(unsigned char)*c;
                 if (ch < 32 || ch > 126) ch = 32;
-                // Font atlas: 16x6 grid of 95 printable chars starting at 32
                 int col = (ch - 32) % 16;
                 int row = (ch - 32) / 16;
                 float u0 = col / 16.0f, u1 = (col+1) / 16.0f;
                 float v0 = row / 6.0f,  v1 = (row+1) / 6.0f;
-                // quad (2 triangles)
                 float x0 = cx, x1 = cx + charW;
                 float y0 = startY, y1 = startY + charH;
                 verts.insert(verts.end(), {x0,y0, u0,v1, x1,y0, u1,v1, x1,y1, u1,v0,
@@ -1180,12 +1572,245 @@ static void main_loop() {
             glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(verts.size()/4));
         };
 
-        float cw = 0.022f, ch = 0.045f;
-        renderLine(line1, -0.98f, 0.92f, cw, ch, glm::vec3(1.0f, 0.9f, 0.3f));
-        renderLine(line2, -0.98f, 0.86f, cw*0.8f, ch*0.8f, glm::vec3(0.8f, 0.8f, 0.8f));
-        renderLine(line3, -0.98f, 0.80f, cw*0.8f, ch*0.8f, glm::vec3(1.0f, 0.5f, 0.3f));
+        // Helper: render a filled quad (no texture)
+        auto renderQuad = [&](float x0, float y0, float x1, float y1, glm::vec3 color) {
+            glUniform3fv(s.hu.color, 1, glm::value_ptr(color));
+            // Use space char UV (fully empty region)
+            float u0 = 0.0f, v0 = 0.0f;
+            float verts[] = {
+                x0,y0, u0,v0, x1,y0, u0,v0, x1,y1, u0,v0,
+                x0,y0, u0,v0, x1,y1, u0,v0, x0,y1, u0,v0
+            };
+            glBindVertexArray(s.hudVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, s.hudVBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        };
 
+        float cw = 0.022f, ch = 0.045f;
+        float scw = cw * 0.8f, sch = ch * 0.8f;
+
+        // ── Top-left: score info ──
+        char buf[64];
+        snprintf(buf, sizeof(buf), "DESTROYED: %d", s.score.totalDestroyed);
+        renderLine(buf, -0.98f, 0.92f, cw, ch, glm::vec3(1.0f, 0.9f, 0.3f));
+
+        snprintf(buf, sizeof(buf), "H:%d T:%d P:%d",
+                 s.score.housesDestroyed, s.score.treesDestroyed, s.score.propsDestroyed);
+        renderLine(buf, -0.98f, 0.86f, scw, sch, glm::vec3(0.8f, 0.8f, 0.8f));
+
+        snprintf(buf, sizeof(buf), "TORNADO x%.1f", s.tornadoScale);
+        renderLine(buf, -0.98f, 0.80f, scw, sch, glm::vec3(1.0f, 0.5f, 0.3f));
+
+        // ── Top-right: wave info ──
+        snprintf(buf, sizeof(buf), "WAVE %d/%d", s.wave.number, TOTAL_WAVES);
+        renderLine(buf, 0.52f, 0.92f, cw, ch, glm::vec3(0.5f, 0.9f, 1.0f));
+
+        // Wave progress bar
+        float progress = (s.wave.target > 0) ?
+            (float)s.wave.destroyed / (float)s.wave.target : 0.0f;
+        progress = glm::clamp(progress, 0.0f, 1.0f);
+        float barX0 = 0.52f, barX1 = 0.96f, barY = 0.88f, barH = 0.02f;
+        renderQuad(barX0, barY, barX1, barY + barH, glm::vec3(0.2f, 0.2f, 0.2f));
+        renderQuad(barX0, barY, barX0 + (barX1 - barX0) * progress, barY + barH,
+                   glm::vec3(0.3f, 0.8f, 1.0f));
+
+        snprintf(buf, sizeof(buf), "%d/%d", s.wave.destroyed, s.wave.target);
+        renderLine(buf, 0.52f, 0.83f, scw * 0.8f, sch * 0.8f, glm::vec3(0.7f, 0.7f, 0.7f));
+
+        // ── Active power-ups (left side, below score) ──
+        float puY = 0.72f;
+        for (const auto& ap : s.activePowerUps) {
+            const char* name = "";
+            glm::vec3 puCol(1.0f);
+            switch (ap.type) {
+                case PowerUpType::SPEED_BOOST: name = "SPEED"; puCol = glm::vec3(0.2f, 1.0f, 0.3f); break;
+                case PowerUpType::SIZE_DOUBLE: name = "SIZE x2"; puCol = glm::vec3(1.0f, 0.3f, 0.8f); break;
+                case PowerUpType::MAGNET:      name = "MAGNET"; puCol = glm::vec3(0.3f, 0.5f, 1.0f); break;
+                case PowerUpType::SHIELD:      name = "SHIELD"; puCol = glm::vec3(1.0f, 0.9f, 0.2f); break;
+            }
+            snprintf(buf, sizeof(buf), "%s %.1fs", name, ap.remaining);
+            // Flash when about to expire
+            float alpha = (ap.remaining < 2.0f) ? (0.5f + 0.5f * sinf(t * 8.0f)) : 1.0f;
+            renderLine(buf, -0.98f, puY, scw * 0.75f, sch * 0.75f,
+                       puCol * alpha);
+            puY -= 0.05f;
+        }
+
+        // ── Minimap (bottom-right corner) ──
+        {
+            float mmX = 0.72f;  // center X in NDC
+            float mmY = -0.72f; // center Y in NDC
+            float mmR = MINIMAP_NDC_SIZE;
+
+            // Background
+            renderQuad(mmX - mmR, mmY - mmR, mmX + mmR, mmY + mmR,
+                       glm::vec3(0.05f, 0.08f, 0.05f));
+
+            // Border
+            float bw = 0.005f;
+            renderQuad(mmX - mmR - bw, mmY - mmR - bw, mmX + mmR + bw, mmY - mmR,
+                       glm::vec3(0.3f, 0.5f, 0.3f));
+            renderQuad(mmX - mmR - bw, mmY + mmR, mmX + mmR + bw, mmY + mmR + bw,
+                       glm::vec3(0.3f, 0.5f, 0.3f));
+            renderQuad(mmX - mmR - bw, mmY - mmR, mmX - mmR, mmY + mmR,
+                       glm::vec3(0.3f, 0.5f, 0.3f));
+            renderQuad(mmX + mmR, mmY - mmR, mmX + mmR + bw, mmY + mmR,
+                       glm::vec3(0.3f, 0.5f, 0.3f));
+
+            // Convert world pos to minimap NDC
+            auto worldToMM = [&](float wx, float wz) -> glm::vec2 {
+                float dx = wx - s.camera.pos.x;
+                float dz = wz - s.camera.pos.z;
+                float mx = mmX + (dx / MINIMAP_RADIUS) * mmR;
+                float my = mmY - (dz / MINIMAP_RADIUS) * mmR;
+                return glm::vec2(mx, my);
+            };
+            auto inMM = [&](glm::vec2 p) {
+                return p.x > mmX - mmR && p.x < mmX + mmR &&
+                       p.y > mmY - mmR && p.y < mmY + mmR;
+            };
+
+            float dotS = 0.006f;
+
+            // Houses (red dots)
+            for (const auto& h : s.houses) {
+                if (h.destroyed) continue;
+                glm::vec2 p = worldToMM(h.pos.x, h.pos.z);
+                if (inMM(p))
+                    renderQuad(p.x-dotS, p.y-dotS, p.x+dotS, p.y+dotS,
+                               glm::vec3(0.9f, 0.3f, 0.2f));
+            }
+            // Trees (green dots)
+            for (const auto& tr : s.chunkTrees) {
+                if (tr.destroyed) continue;
+                glm::vec2 p = worldToMM(tr.pos.x, tr.pos.z);
+                if (inMM(p))
+                    renderQuad(p.x-dotS*0.7f, p.y-dotS*0.7f, p.x+dotS*0.7f, p.y+dotS*0.7f,
+                               glm::vec3(0.2f, 0.7f, 0.2f));
+            }
+            // Props (gray dots)
+            for (const auto& pr : s.chunkProps) {
+                if (pr.destroyed) continue;
+                glm::vec2 p = worldToMM(pr.pos.x, pr.pos.z);
+                if (inMM(p))
+                    renderQuad(p.x-dotS*0.5f, p.y-dotS*0.5f, p.x+dotS*0.5f, p.y+dotS*0.5f,
+                               glm::vec3(0.5f, 0.5f, 0.5f));
+            }
+            // Power-ups (bright colored dots)
+            for (const auto& pu : s.powerUps) {
+                if (pu.collected) continue;
+                glm::vec2 p = worldToMM(pu.pos.x, pu.pos.z);
+                if (inMM(p))
+                    renderQuad(p.x-dotS, p.y-dotS, p.x+dotS, p.y+dotS,
+                               glm::vec3(1.0f, 1.0f, 0.0f));
+            }
+            // Tornado (white cross)
+            {
+                glm::vec2 tp = worldToMM(s.tornadoPos.x, s.tornadoPos.y);
+                float cs = dotS * 2.0f;
+                if (inMM(tp)) {
+                    renderQuad(tp.x-cs, tp.y-dotS*0.5f, tp.x+cs, tp.y+dotS*0.5f,
+                               glm::vec3(1.0f, 1.0f, 1.0f));
+                    renderQuad(tp.x-dotS*0.5f, tp.y-cs, tp.x+dotS*0.5f, tp.y+cs,
+                               glm::vec3(1.0f, 1.0f, 1.0f));
+                }
+            }
+            // Player (cyan dot at center)
+            renderQuad(mmX-dotS, mmY-dotS, mmX+dotS, mmY+dotS,
+                       glm::vec3(0.0f, 1.0f, 1.0f));
+        }
+
+        // ── Wave announcement overlay ──
+        if (s.gamePhase == GamePhase::WAVE_ANNOUNCE) {
+            float alpha = 1.0f;
+            if (s.wave.announceTimer > WAVE_ANNOUNCE_TIME - 0.5f)
+                alpha = (WAVE_ANNOUNCE_TIME - s.wave.announceTimer) * 2.0f;
+
+            float bigCW = 0.05f, bigCH = 0.1f;
+            snprintf(buf, sizeof(buf), "WAVE %d", s.wave.number);
+            float textW = (float)strlen(buf) * bigCW;
+            renderLine(buf, -textW * 0.5f, 0.1f, bigCW, bigCH,
+                       glm::vec3(0.5f, 0.9f, 1.0f) * alpha);
+
+            snprintf(buf, sizeof(buf), "DESTROY %d OBJECTS", s.wave.target);
+            float smCW = 0.025f, smCH = 0.05f;
+            float stW = (float)strlen(buf) * smCW;
+            renderLine(buf, -stW * 0.5f, 0.0f, smCW, smCH,
+                       glm::vec3(0.8f, 0.8f, 0.8f) * alpha);
+        }
+
+        // ── Victory screen ──
+        if (s.gamePhase == GamePhase::VICTORY) {
+            s.victoryTimer += dt;
+
+            // Semi-dark background
+            renderQuad(-0.6f, -0.35f, 0.6f, 0.45f,
+                       glm::vec3(0.02f, 0.02f, 0.05f));
+
+            float bigCW = 0.06f, bigCH = 0.12f;
+            const char* victoryText = "VICTORY";
+            float vw = 7.0f * bigCW;
+            float pulse = 0.7f + 0.3f * sinf(t * 3.0f);
+            renderLine(victoryText, -vw * 0.5f, 0.2f, bigCW, bigCH,
+                       glm::vec3(1.0f, 0.85f, 0.0f) * pulse);
+
+            float smCW = 0.02f, smCH = 0.04f;
+            snprintf(buf, sizeof(buf), "ALL %d WAVES COMPLETE", TOTAL_WAVES);
+            float bw2 = (float)strlen(buf) * smCW;
+            renderLine(buf, -bw2 * 0.5f, 0.12f, smCW, smCH,
+                       glm::vec3(0.7f, 0.9f, 1.0f));
+
+            snprintf(buf, sizeof(buf), "TOTAL DESTROYED: %d", s.score.totalDestroyed);
+            bw2 = (float)strlen(buf) * smCW;
+            renderLine(buf, -bw2 * 0.5f, 0.04f, smCW, smCH,
+                       glm::vec3(0.9f, 0.9f, 0.9f));
+
+            snprintf(buf, sizeof(buf), "MAX TORNADO: x%.1f", s.tornadoScale);
+            bw2 = (float)strlen(buf) * smCW;
+            renderLine(buf, -bw2 * 0.5f, -0.04f, smCW, smCH,
+                       glm::vec3(1.0f, 0.5f, 0.3f));
+
+            int hi = getHighScore();
+            snprintf(buf, sizeof(buf), "HIGH SCORE: %d", hi);
+            bw2 = (float)strlen(buf) * smCW;
+            renderLine(buf, -bw2 * 0.5f, -0.14f, smCW, smCH,
+                       glm::vec3(1.0f, 0.9f, 0.3f));
+
+            if (s.victoryTimer > 2.0f) {
+                float blink = (sinf(t * 4.0f) > 0.0f) ? 1.0f : 0.3f;
+                const char* restart = "PRESS R TO RESTART";
+                float rw = (float)strlen(restart) * smCW;
+                renderLine(restart, -rw * 0.5f, -0.25f, smCW, smCH,
+                           glm::vec3(0.6f, 0.8f, 0.6f) * blink);
+            }
+        }
+
+        glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
+    }
+
+    // ── Restart on R key (during victory) ──
+    if (s.gamePhase == GamePhase::VICTORY) {
+        if (glfwGetKey(s.window, GLFW_KEY_R) == GLFW_PRESS) {
+            // Reset game state
+            s.score = Score{};
+            s.tornadoScale = 1.0f;
+            s.lastDestroyTime = t;
+            s.wave = Wave{};
+            s.wave.announceTimer = 0.0f;
+            s.gamePhase = GamePhase::WAVE_ANNOUNCE;
+            s.victoryTimer = 0.0f;
+            s.activePowerUps.clear();
+            s.powerUps.clear();
+            s.powerUpSpawnTimer = 5.0f;
+            // Re-health all objects
+            for (auto& h : s.houses)     { h.health = 1.0f; h.destroyed = false; }
+            for (auto& tr : s.chunkTrees) { tr.health = 1.0f; tr.destroyed = false; }
+            for (auto& pr : s.chunkProps) { pr.health = 1.0f; pr.destroyed = false; }
+            s.debrisPieces.clear();
+            s.scorchMarks.clear();
+        }
     }
 
     // -- FPS counter --
@@ -1901,6 +2526,9 @@ int main() {
     app.startTime = (float)glfwGetTime();
     app.lastT     = glfwGetTime();
     app.fpsTimer  = glfwGetTime();
+    app.lastDestroyTime = app.startTime;
+    app.wave.target = WAVE_BASE_TARGET;
+    app.gamePhase = GamePhase::WAVE_ANNOUNCE;
 
     // ══════════════════════════════════════
     // Enter main loop
