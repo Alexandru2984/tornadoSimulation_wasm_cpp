@@ -106,6 +106,12 @@ else()
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/shaders/rain_fragment.glsl
             $<TARGET_FILE_DIR:tornado>/shaders/rain_fragment.glsl
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/shaders/hud_vertex.glsl
+            $<TARGET_FILE_DIR:tornado>/shaders/hud_vertex.glsl
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/shaders/hud_fragment.glsl
+            $<TARGET_FILE_DIR:tornado>/shaders/hud_fragment.glsl
     )
     add_custom_command(TARGET tornado POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory

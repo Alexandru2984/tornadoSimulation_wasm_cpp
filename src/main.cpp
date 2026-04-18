@@ -65,11 +65,16 @@ static const float PULL_OUTER      = 0.5f;
 static const float VEL_DAMPING     = 2.0f;
 
 // Destruction
-static const int   MAX_DEBRIS          = 300;
+static const int   MAX_DEBRIS          = 500;
 static const float DESTRUCTION_RADIUS  = 3.5f;
 static const float DAMAGE_RATE         = 2.0f;
 static const int   DEBRIS_PER_HOUSE    = 40;
+static const int   DEBRIS_PER_TREE     = 15;
 static const float DEBRIS_LIFETIME     = 5.0f;
+
+// Tornado growth
+static const float TORNADO_GROWTH_PER_OBJ = 0.04f; // scale bump per destroyed object
+static const float TORNADO_MAX_SCALE      = 3.0f;
 
 // Weather
 static const int   MAX_RAIN            = 4000;
@@ -85,6 +90,10 @@ static const float CHUNK_SIZE            = 20.0f;
 static const int   CHUNK_RADIUS          = 3;      // chunks around player
 static const int   HOUSES_PER_CHUNK      = 3;
 static const int   TREES_PER_CHUNK       = 5;
+static const int   FENCES_PER_CHUNK      = 4;
+static const int   CARS_PER_CHUNK        = 1;
+static const int   POLES_PER_CHUNK       = 2;
+static const int   MAX_SCORCH_MARKS      = 200;
 
 // Uniform location caches
 struct MainUniforms {
@@ -100,6 +109,9 @@ struct SkyUniforms {
 };
 struct RainUniforms {
     GLint proj=-1, view=-1;
+};
+struct HudUniforms {
+    GLint fontTex=-1, color=-1;
 };
 
 // ── Structs ──────────────────────────────────────────────────────────
@@ -153,6 +165,30 @@ struct RainParticle {
 struct ChunkTree {
     glm::vec3 pos;
     int chunkX = 0, chunkZ = 0;
+    float health = 1.0f;
+    bool destroyed = false;
+};
+
+// New destructible objects
+struct ChunkProp {
+    glm::vec3 pos;
+    int chunkX = 0, chunkZ = 0;
+    float health = 1.0f;
+    bool destroyed = false;
+    int propType; // 0=fence, 1=car, 2=pole
+    float yaw;    // random rotation
+};
+
+struct ScorchMark {
+    glm::vec3 pos;
+    float radius;
+};
+
+struct Score {
+    int housesDestroyed = 0;
+    int treesDestroyed  = 0;
+    int propsDestroyed  = 0;
+    int totalDestroyed  = 0;
 };
 
 // Track which chunks are currently loaded
@@ -199,6 +235,11 @@ struct AppState {
     ParticleUniforms pu;
     SkyUniforms su;
     RainUniforms ru;
+    HudUniforms hu;
+
+    // Score & tornado growth
+    Score score;
+    float tornadoScale = 1.0f;
 
     // Destruction
     std::vector<DestructibleHouse> houses;
@@ -215,6 +256,19 @@ struct AppState {
     GLuint skyVAO = 0;
     GLuint skyProgram = 0;
     GLuint rainProgram = 0;
+    GLuint hudProgram = 0;
+    GLuint fontTex = 0;
+    GLuint hudVAO = 0, hudVBO = 0;
+
+    // Props (fences, cars, poles)
+    std::vector<ChunkProp> chunkProps;
+    SimpleModel fence;
+    SimpleModel car;
+    SimpleModel pole;
+
+    // Ground scorch marks
+    std::vector<ScorchMark> scorchMarks;
+    float scorchTimer = 0.0f;
 
     // Particles
     GLuint particleVAO = 0, particleVBO = 0;
@@ -406,7 +460,37 @@ static void generateChunk(int cx, int cz) {
                            oz + r01(cRng) * CHUNK_SIZE);
         t.chunkX = cx;
         t.chunkZ = cz;
+        t.health = 1.0f;
+        t.destroyed = false;
         app.chunkTrees.push_back(t);
+    }
+    // Props: fences, cars, poles
+    for (int i = 0; i < FENCES_PER_CHUNK; ++i) {
+        ChunkProp p;
+        p.pos = glm::vec3(ox + r01(cRng) * CHUNK_SIZE, 0.0f,
+                           oz + r01(cRng) * CHUNK_SIZE);
+        p.chunkX = cx; p.chunkZ = cz;
+        p.propType = 0; // fence
+        p.yaw = r01(cRng) * 6.28f;
+        app.chunkProps.push_back(p);
+    }
+    for (int i = 0; i < CARS_PER_CHUNK; ++i) {
+        ChunkProp p;
+        p.pos = glm::vec3(ox + r01(cRng) * CHUNK_SIZE, 0.0f,
+                           oz + r01(cRng) * CHUNK_SIZE);
+        p.chunkX = cx; p.chunkZ = cz;
+        p.propType = 1; // car
+        p.yaw = r01(cRng) * 6.28f;
+        app.chunkProps.push_back(p);
+    }
+    for (int i = 0; i < POLES_PER_CHUNK; ++i) {
+        ChunkProp p;
+        p.pos = glm::vec3(ox + r01(cRng) * CHUNK_SIZE, 0.0f,
+                           oz + r01(cRng) * CHUNK_SIZE);
+        p.chunkX = cx; p.chunkZ = cz;
+        p.propType = 2; // pole
+        p.yaw = 0.0f;
+        app.chunkProps.push_back(p);
     }
 }
 
@@ -444,6 +528,14 @@ static void updateChunks(const glm::vec3& playerPos) {
                 return chunkTooFar(t.chunkX, t.chunkZ);
             }),
         app.chunkTrees.end());
+
+    // Remove far props
+    app.chunkProps.erase(
+        std::remove_if(app.chunkProps.begin(), app.chunkProps.end(),
+            [&](const ChunkProp& p) {
+                return chunkTooFar(p.chunkX, p.chunkZ);
+            }),
+        app.chunkProps.end());
 
     // Untrack removed chunks
     for (auto it = app.loadedChunks.begin(); it != app.loadedChunks.end(); ) {
@@ -511,17 +603,68 @@ static void main_loop() {
     }
 
     // ── Destruction: damage houses near tornado ──
+    float effectiveRadius = DESTRUCTION_RADIUS * s.tornadoScale;
     for (auto& h : s.houses) {
         if (h.destroyed) continue;
         float dist = glm::length(glm::vec2(h.pos.x - s.tornadoPos.x,
                                             h.pos.z - s.tornadoPos.y));
-        if (dist < DESTRUCTION_RADIUS) {
+        if (dist < effectiveRadius) {
             h.health -= DAMAGE_RATE * dt;
             if (h.health <= 0.0f) {
                 h.destroyed = true;
                 spawnDebris(h.pos, DEBRIS_PER_HOUSE);
+                s.score.housesDestroyed++;
+                s.score.totalDestroyed++;
+                s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ, TORNADO_MAX_SCALE);
+                if ((int)s.scorchMarks.size() < MAX_SCORCH_MARKS)
+                    s.scorchMarks.push_back({h.pos, 1.5f});
             }
         }
+    }
+
+    // ── Destruction: damage trees near tornado ──
+    for (auto& tr : s.chunkTrees) {
+        if (tr.destroyed) continue;
+        float dist = glm::length(glm::vec2(tr.pos.x - s.tornadoPos.x,
+                                            tr.pos.z - s.tornadoPos.y));
+        if (dist < effectiveRadius) {
+            tr.health -= DAMAGE_RATE * 1.5f * dt; // trees break faster
+            if (tr.health <= 0.0f) {
+                tr.destroyed = true;
+                spawnDebris(tr.pos, DEBRIS_PER_TREE);
+                s.score.treesDestroyed++;
+                s.score.totalDestroyed++;
+                s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.5f, TORNADO_MAX_SCALE);
+            }
+        }
+    }
+
+    // ── Destruction: damage props near tornado ──
+    for (auto& pr : s.chunkProps) {
+        if (pr.destroyed) continue;
+        float dist = glm::length(glm::vec2(pr.pos.x - s.tornadoPos.x,
+                                            pr.pos.z - s.tornadoPos.y));
+        if (dist < effectiveRadius) {
+            float rate = (pr.propType == 1) ? DAMAGE_RATE * 0.8f : DAMAGE_RATE * 3.0f; // cars tougher
+            pr.health -= rate * dt;
+            if (pr.health <= 0.0f) {
+                pr.destroyed = true;
+                int debrisCount = (pr.propType == 1) ? 25 : 8;
+                spawnDebris(pr.pos, debrisCount);
+                s.score.propsDestroyed++;
+                s.score.totalDestroyed++;
+                s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.3f, TORNADO_MAX_SCALE);
+            }
+        }
+    }
+
+    // ── Ground scorch: tornado leaves dark trail ──
+    s.scorchTimer += dt;
+    if (s.scorchTimer > 0.15f) {
+        s.scorchTimer = 0.0f;
+        if ((int)s.scorchMarks.size() < MAX_SCORCH_MARKS)
+            s.scorchMarks.push_back({glm::vec3(s.tornadoPos.x, 0.01f, s.tornadoPos.y),
+                                      0.8f * s.tornadoScale});
     }
 
     // ── Debris physics ──
@@ -697,9 +840,17 @@ static void main_loop() {
 
         glUniform1f(mu.windBend, 1.5f);
 
-        for (const auto& ct : s.chunkTrees) {
-            glm::mat4 model = glm::scale(
-                glm::translate(glm::mat4(1.0f), ct.pos), glm::vec3(2.0f));
+        for (auto& ct : s.chunkTrees) {
+            if (ct.destroyed) continue;
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), ct.pos);
+            // Shake when damaged
+            if (ct.health < 1.0f) {
+                float shake = (1.0f - ct.health) * 0.3f;
+                model = glm::translate(model, glm::vec3(
+                    (s.rnd01(s.rng)-0.5f)*shake, 0.0f,
+                    (s.rnd01(s.rng)-0.5f)*shake));
+            }
+            model = glm::scale(model, glm::vec3(2.0f));
             glm::mat3 nm = normalMat3(model);
             glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
             glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
@@ -708,6 +859,61 @@ static void main_loop() {
             glDrawElements(GL_TRIANGLES, s.tree.indexCount, GL_UNSIGNED_INT, nullptr);
         }
         glUniform1f(mu.windBend, 0.0f);
+    }
+
+    // -- Props (fences, cars, poles) --
+    {
+        glUniform1i(mu.objType, 5); // reuse debris shader type
+        glUniform1f(mu.enableSwirl, 0.0f);
+        glUniform1i(mu.hasAlbedo, 0);
+
+        for (auto& pr : s.chunkProps) {
+            if (pr.destroyed) continue;
+            const SimpleModel* mdl = nullptr;
+            glm::vec3 tint;
+            float sc = 1.0f;
+            if (pr.propType == 0) { mdl = &s.fence; tint = glm::vec3(0.6f, 0.45f, 0.3f); sc = 1.0f; }        // fence
+            else if (pr.propType == 1) { mdl = &s.car; tint = glm::vec3(0.7f, 0.15f, 0.1f); sc = 0.8f; }      // car
+            else { mdl = &s.pole; tint = glm::vec3(0.5f, 0.5f, 0.55f); sc = 1.0f; }                            // pole
+            if (!mdl || !mdl->vao) continue;
+
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), pr.pos);
+            model = glm::rotate(model, pr.yaw, glm::vec3(0,1,0));
+            // Shake when damaged
+            if (pr.health < 1.0f) {
+                float shake = (1.0f - pr.health) * 0.15f;
+                model = glm::translate(model, glm::vec3(
+                    (s.rnd01(s.rng)-0.5f)*shake, 0.0f,
+                    (s.rnd01(s.rng)-0.5f)*shake));
+            }
+            model = glm::scale(model, glm::vec3(sc));
+            glm::mat3 nm = normalMat3(model);
+            glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+            glUniform3fv(mu.tint, 1, glm::value_ptr(tint));
+            glUniform1f(mu.opacity, 1.0f);
+            glBindVertexArray(mdl->vao);
+            glDrawElements(GL_TRIANGLES, mdl->indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+    }
+
+    // -- Scorch marks on ground --
+    if (!s.scorchMarks.empty()) {
+        glUniform1i(mu.objType, 3);
+        glUniform1i(mu.hasAlbedo, 0);
+        glUniform1f(mu.enableSwirl, 0.0f);
+        for (const auto& sm : s.scorchMarks) {
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), sm.pos);
+            model = glm::scale(model, glm::vec3(sm.radius, 1.0f, sm.radius));
+            glm::mat3 nm = normalMat3(model);
+            glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+            glUniform3f(mu.tint, 0.3f, 0.3f, 0.25f); // dark scorch
+            glUniform1f(mu.opacity, 0.7f);
+            glBindVertexArray(s.groundVAO);
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+        }
+        glUniform1f(mu.opacity, 1.0f);
     }
 
     // -- glTF models (if loaded) --
@@ -752,6 +958,7 @@ static void main_loop() {
     {
         glm::mat4 model = glm::translate(glm::mat4(1.0f),
                               glm::vec3(s.tornadoPos.x, 0.0f, s.tornadoPos.y));
+        model = glm::scale(model, glm::vec3(s.tornadoScale, s.tornadoScale, s.tornadoScale));
         glm::mat3 nm = normalMat3(model);
         glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
         glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
@@ -883,6 +1090,59 @@ static void main_loop() {
         glBindVertexArray(0);
     }
 
+    // ════════════════════════════════
+    // HUD — score overlay
+    // ════════════════════════════════
+    {
+        glDisable(GL_DEPTH_TEST);
+        glUseProgram(s.hudProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s.fontTex);
+        glUniform1i(s.hu.fontTex, 0);
+
+        // Build HUD text lines
+        char line1[64], line2[64], line3[64];
+        snprintf(line1, sizeof(line1), "DESTROYED: %d", s.score.totalDestroyed);
+        snprintf(line2, sizeof(line2), "H:%d T:%d P:%d",
+                 s.score.housesDestroyed, s.score.treesDestroyed, s.score.propsDestroyed);
+        snprintf(line3, sizeof(line3), "TORNADO x%.1f", s.tornadoScale);
+
+        // Render function: each char is a textured quad
+        auto renderLine = [&](const char* text, float startX, float startY,
+                              float charW, float charH, glm::vec3 color) {
+            glUniform3fv(s.hu.color, 1, glm::value_ptr(color));
+            std::vector<float> verts;
+            float cx = startX;
+            for (const char* c = text; *c; ++c) {
+                int ch = (int)(unsigned char)*c;
+                if (ch < 32 || ch > 126) ch = 32;
+                // Font atlas: 16x6 grid of 95 printable chars starting at 32
+                int col = (ch - 32) % 16;
+                int row = (ch - 32) / 16;
+                float u0 = col / 16.0f, u1 = (col+1) / 16.0f;
+                float v0 = row / 6.0f,  v1 = (row+1) / 6.0f;
+                // quad (2 triangles)
+                float x0 = cx, x1 = cx + charW;
+                float y0 = startY, y1 = startY + charH;
+                verts.insert(verts.end(), {x0,y0, u0,v1, x1,y0, u1,v1, x1,y1, u1,v0,
+                                            x0,y0, u0,v1, x1,y1, u1,v0, x0,y1, u0,v0});
+                cx += charW;
+            }
+            glBindVertexArray(s.hudVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, s.hudVBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0,
+                            (GLsizeiptr)(verts.size()*sizeof(float)), verts.data());
+            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(verts.size()/4));
+        };
+
+        float cw = 0.022f, ch = 0.045f;
+        renderLine(line1, -0.98f, 0.92f, cw, ch, glm::vec3(1.0f, 0.9f, 0.3f));
+        renderLine(line2, -0.98f, 0.86f, cw*0.8f, ch*0.8f, glm::vec3(0.8f, 0.8f, 0.8f));
+        renderLine(line3, -0.98f, 0.80f, cw*0.8f, ch*0.8f, glm::vec3(1.0f, 0.5f, 0.3f));
+
+        glEnable(GL_DEPTH_TEST);
+    }
+
     // -- FPS counter --
     s.fpsFrames++;
     double nowF = glfwGetTime();
@@ -1003,6 +1263,23 @@ int main() {
         if (!app.rainProgram) { std::cerr << "Rain shader program failed.\n"; return -1; }
     }
 
+    // ── Load & compile HUD shaders ──
+    {
+        std::string hvs = loadFile("shaders/hud_vertex.glsl");
+        std::string hfs = loadFile("shaders/hud_fragment.glsl");
+        if (hvs.empty() || hfs.empty()) {
+            hvs = loadFile("../shaders/hud_vertex.glsl");
+            hfs = loadFile("../shaders/hud_fragment.glsl");
+        }
+        hvs = adaptShaderSource(hvs, false);
+        hfs = adaptShaderSource(hfs, true);
+        GLuint hv = compileShader(GL_VERTEX_SHADER, hvs.c_str());
+        GLuint hf = compileShader(GL_FRAGMENT_SHADER, hfs.c_str());
+        app.hudProgram = linkProgram(hv, hf);
+        glDeleteShader(hv); glDeleteShader(hf);
+        if (!app.hudProgram) { std::cerr << "HUD shader program failed.\n"; return -1; }
+    }
+
     // ── Cache uniform locations ──
     {
         GLuint p = app.program;
@@ -1043,6 +1320,12 @@ int main() {
         GLuint p = app.rainProgram;
         app.ru.proj = glGetUniformLocation(p, "uProj");
         app.ru.view = glGetUniformLocation(p, "uView");
+    }
+    // HUD shader uniforms
+    {
+        GLuint p = app.hudProgram;
+        app.hu.fontTex = glGetUniformLocation(p, "uFontTex");
+        app.hu.color   = glGetUniformLocation(p, "uColor");
     }
 
     // ══════════════════════════════════════
@@ -1087,6 +1370,152 @@ int main() {
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
+    }
+
+    // ══════════════════════════════════════
+    // Procedural bitmap font (16x6 grid, chars 32-127)
+    // ══════════════════════════════════════
+    {
+        // Tiny 5x7 bitmap patterns for printable ASCII
+        // Each char is 5 wide, 7 tall, packed in a 16x6 grid → 80x42 texture
+        const int GW = 5, GH = 7, COLS = 16, ROWS = 6;
+        const int TW = GW * COLS, TH = GH * ROWS;
+        std::vector<unsigned char> font(TW * TH, 0);
+
+        // Minimal bitmaps for digits 0-9, A-Z, a-z, and some punctuation
+        // Each string is 7 rows of 5 bits
+        struct GlyphDef { int ch; const char* bits[7]; };
+        GlyphDef glyphs[] = {
+            {'0', {"01110","10001","10011","10101","11001","10001","01110"}},
+            {'1', {"00100","01100","00100","00100","00100","00100","01110"}},
+            {'2', {"01110","10001","00001","00110","01000","10000","11111"}},
+            {'3', {"01110","10001","00001","00110","00001","10001","01110"}},
+            {'4', {"00010","00110","01010","10010","11111","00010","00010"}},
+            {'5', {"11111","10000","11110","00001","00001","10001","01110"}},
+            {'6', {"01110","10000","11110","10001","10001","10001","01110"}},
+            {'7', {"11111","00001","00010","00100","01000","01000","01000"}},
+            {'8', {"01110","10001","10001","01110","10001","10001","01110"}},
+            {'9', {"01110","10001","10001","01111","00001","00001","01110"}},
+            {'A', {"01110","10001","10001","11111","10001","10001","10001"}},
+            {'B', {"11110","10001","10001","11110","10001","10001","11110"}},
+            {'C', {"01110","10001","10000","10000","10000","10001","01110"}},
+            {'D', {"11110","10001","10001","10001","10001","10001","11110"}},
+            {'E', {"11111","10000","10000","11110","10000","10000","11111"}},
+            {'F', {"11111","10000","10000","11110","10000","10000","10000"}},
+            {'G', {"01110","10001","10000","10111","10001","10001","01110"}},
+            {'H', {"10001","10001","10001","11111","10001","10001","10001"}},
+            {'I', {"01110","00100","00100","00100","00100","00100","01110"}},
+            {'K', {"10001","10010","10100","11000","10100","10010","10001"}},
+            {'L', {"10000","10000","10000","10000","10000","10000","11111"}},
+            {'M', {"10001","11011","10101","10101","10001","10001","10001"}},
+            {'N', {"10001","11001","10101","10011","10001","10001","10001"}},
+            {'O', {"01110","10001","10001","10001","10001","10001","01110"}},
+            {'P', {"11110","10001","10001","11110","10000","10000","10000"}},
+            {'R', {"11110","10001","10001","11110","10100","10010","10001"}},
+            {'S', {"01110","10001","10000","01110","00001","10001","01110"}},
+            {'T', {"11111","00100","00100","00100","00100","00100","00100"}},
+            {'U', {"10001","10001","10001","10001","10001","10001","01110"}},
+            {'V', {"10001","10001","10001","10001","01010","01010","00100"}},
+            {'W', {"10001","10001","10001","10101","10101","11011","10001"}},
+            {'X', {"10001","01010","00100","00100","00100","01010","10001"}},
+            {'Y', {"10001","01010","00100","00100","00100","00100","00100"}},
+            {'Z', {"11111","00001","00010","00100","01000","10000","11111"}},
+            {':', {"00000","00100","00100","00000","00100","00100","00000"}},
+            {'.', {"00000","00000","00000","00000","00000","01100","01100"}},
+            {'x', {"00000","00000","10001","01010","00100","01010","10001"}},
+            {' ', {"00000","00000","00000","00000","00000","00000","00000"}},
+        };
+        for (auto& g : glyphs) {
+            int idx = g.ch - 32;
+            int col = idx % COLS, row = idx / COLS;
+            for (int gy = 0; gy < GH; ++gy) {
+                for (int gx = 0; gx < GW; ++gx) {
+                    if (g.bits[gy][gx] == '1') {
+                        int px_x = col * GW + gx;
+                        int px_y = row * GH + gy;
+                        font[px_y * TW + px_x] = 255;
+                    }
+                }
+            }
+        }
+
+        glGenTextures(1, &app.fontTex);
+        glBindTexture(GL_TEXTURE_2D, app.fontTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, TW, TH, 0, GL_RED, GL_UNSIGNED_BYTE, font.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    // ══════════════════════════════════════
+    // HUD VAO/VBO (dynamic text quads)
+    // ══════════════════════════════════════
+    {
+        glGenVertexArrays(1, &app.hudVAO);
+        glGenBuffers(1, &app.hudVBO);
+        glBindVertexArray(app.hudVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, app.hudVBO);
+        glBufferData(GL_ARRAY_BUFFER, 256 * 6 * 4 * sizeof(float), nullptr, GL_STREAM_DRAW);
+        // layout: vec2 pos, vec2 uv per vertex
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void*)(2*sizeof(float)));
+        glBindVertexArray(0);
+    }
+
+    // ══════════════════════════════════════
+    // Prop meshes: fence, car, pole
+    // ══════════════════════════════════════
+    {
+        // Helper to create a simple box mesh with per-face normals
+        auto makeBox = [](SimpleModel& mdl, float hw, float hh, float hd, glm::vec3 color) {
+            struct PV { glm::vec3 p; glm::vec3 n; };
+            std::vector<PV> verts;
+            std::vector<unsigned int> idx;
+            auto addFace = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d, glm::vec3 n) {
+                unsigned int base = (unsigned int)verts.size();
+                verts.push_back({a,n}); verts.push_back({b,n});
+                verts.push_back({c,n}); verts.push_back({d,n});
+                idx.push_back(base); idx.push_back(base+1); idx.push_back(base+2);
+                idx.push_back(base); idx.push_back(base+2); idx.push_back(base+3);
+            };
+            glm::vec3 v[8] = {
+                {-hw,0,-hd},{hw,0,-hd},{hw,0,hd},{-hw,0,hd},
+                {-hw,hh,-hd},{hw,hh,-hd},{hw,hh,hd},{-hw,hh,hd}
+            };
+            addFace(v[3],v[2],v[1],v[0], { 0,-1, 0});
+            addFace(v[4],v[5],v[6],v[7], { 0, 1, 0});
+            addFace(v[0],v[1],v[5],v[4], { 0, 0,-1});
+            addFace(v[1],v[2],v[6],v[5], { 1, 0, 0});
+            addFace(v[2],v[3],v[7],v[6], { 0, 0, 1});
+            addFace(v[3],v[0],v[4],v[7], {-1, 0, 0});
+
+            glGenVertexArrays(1, &mdl.vao);
+            glGenBuffers(1, &mdl.vbo);
+            glGenBuffers(1, &mdl.ebo);
+            glBindVertexArray(mdl.vao);
+            glBindBuffer(GL_ARRAY_BUFFER, mdl.vbo);
+            glBufferData(GL_ARRAY_BUFFER, verts.size()*sizeof(PV), verts.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mdl.ebo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size()*sizeof(unsigned int), idx.data(), GL_STATIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,p));
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,n));
+            glDisableVertexAttribArray(2);
+            glVertexAttrib3f(2, color.x, color.y, color.z);
+            glBindVertexArray(0);
+            mdl.indexCount = (GLsizei)idx.size();
+        };
+
+        // Fence: flat wide, low
+        makeBox(app.fence, 1.0f, 0.5f, 0.05f, glm::vec3(0.6f, 0.45f, 0.3f));
+        // Car: wider low box
+        makeBox(app.car, 0.6f, 0.45f, 0.3f, glm::vec3(0.7f, 0.15f, 0.1f));
+        // Pole: thin tall
+        makeBox(app.pole, 0.05f, 2.5f, 0.05f, glm::vec3(0.5f, 0.5f, 0.55f));
     }
 
     // ══════════════════════════════════════
@@ -1457,6 +1886,13 @@ int main() {
     glDeleteVertexArrays(1, &app.skyVAO);
     glDeleteTextures(1, &app.brickTex);
     glDeleteTextures(1, &app.leafTex);
+    glDeleteTextures(1, &app.fontTex);
+    glDeleteBuffers(1, &app.hudVBO);
+    glDeleteVertexArrays(1, &app.hudVAO);
+    glDeleteProgram(app.hudProgram);
+    if (app.fence.vao) { glDeleteBuffers(1,&app.fence.vbo); glDeleteBuffers(1,&app.fence.ebo); glDeleteVertexArrays(1,&app.fence.vao); }
+    if (app.car.vao) { glDeleteBuffers(1,&app.car.vbo); glDeleteBuffers(1,&app.car.ebo); glDeleteVertexArrays(1,&app.car.vao); }
+    if (app.pole.vao) { glDeleteBuffers(1,&app.pole.vbo); glDeleteBuffers(1,&app.pole.ebo); glDeleteVertexArrays(1,&app.pole.vao); }
     // glTF models
     if (app.boxModel.vao)  { glDeleteBuffers(1,&app.boxModel.vbo); glDeleteBuffers(1,&app.boxModel.ebo); glDeleteVertexArrays(1,&app.boxModel.vao); if (app.boxModel.texture) glDeleteTextures(1,&app.boxModel.texture); }
     if (app.avocadoModel.vao) { glDeleteBuffers(1,&app.avocadoModel.vbo); glDeleteBuffers(1,&app.avocadoModel.ebo); glDeleteVertexArrays(1,&app.avocadoModel.vao); if (app.avocadoModel.texture) glDeleteTextures(1,&app.avocadoModel.texture); }
