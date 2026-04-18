@@ -64,8 +64,8 @@ static const float VEL_DAMPING     = 2.0f;
 
 // Destruction
 static const int   MAX_DEBRIS          = 300;
-static const float DESTRUCTION_RADIUS  = 2.5f;
-static const float DAMAGE_RATE         = 0.8f;
+static const float DESTRUCTION_RADIUS  = 3.5f;
+static const float DAMAGE_RATE         = 2.0f;
 static const int   DEBRIS_PER_HOUSE    = 40;
 static const float DEBRIS_LIFETIME     = 5.0f;
 
@@ -368,8 +368,8 @@ static void main_loop() {
     float t = (float)nowT - s.startTime;
 
     // -- Tornado follows mouse smoothly --
-    glm::vec2 target(g_mouseX * 2.5f, g_mouseY * -1.0f * 2.5f);
-    s.tornadoPos = s.tornadoPos * 0.92f + target * 0.08f;
+    glm::vec2 target(g_mouseX * 10.0f, g_mouseY * -1.0f * 10.0f);
+    s.tornadoPos = s.tornadoPos * 0.95f + target * 0.05f;
 
     // ── Destruction: damage houses near tornado ──
     for (auto& h : s.houses) {
@@ -559,7 +559,8 @@ static void main_loop() {
         glUniform1f(mu.windBend, 1.5f);
 
         static const glm::vec3 treePos[] = {
-            {-3,0,-5}, {3,0,-4}, {-6,0,2}, {5,0,6}, {-2,0,7}, {8,0,-2}
+            {-3,0,-5}, {3,0,-4}, {-6,0,2}, {5,0,6}, {-2,0,7}, {8,0,-2},
+            {-8,0,-4}, {7,0,7}, {-4,0,9}, {10,0,1}, {-1,0,-9}, {4,0,-3}
         };
         for (const auto& tp : treePos) {
             glm::mat4 model = glm::scale(
@@ -1096,7 +1097,7 @@ int main() {
         glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,p));
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,n));
-        glEnableVertexAttribArray(2);
+        glDisableVertexAttribArray(2);
         glVertexAttrib3f(2, 0.85f, 0.85f, 0.85f);
         glEnableVertexAttribArray(3);
         glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,uv));
@@ -1171,7 +1172,7 @@ int main() {
         glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,p));
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,n));
-        glEnableVertexAttribArray(2);
+        glDisableVertexAttribArray(2);
         glVertexAttrib3f(2, 0.8f, 0.9f, 0.8f);
         glEnableVertexAttribArray(3);
         glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,uv));
@@ -1232,7 +1233,9 @@ int main() {
     // ══════════════════════════════════════
     {
         glm::vec3 housePositions[] = {
-            {-5,0,-3}, {4,0,-6}, {-7,0,5}, {6,0,4}
+            {-5,0,-3}, {4,0,-6}, {-7,0,5}, {6,0,4},
+            {-3,0,-8}, {8,0,0}, {-9,0,-1}, {2,0,8},
+            {-6,0,8}, {9,0,-5}
         };
         for (const auto& hp : housePositions) {
             DestructibleHouse dh;
