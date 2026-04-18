@@ -1,48 +1,48 @@
 # Tornado 3D — C++ / OpenGL / WebAssembly
 
-Simulare 3D interactiva a unei tornade cu particule, case, copaci si modele glTF.
-Ruleaza nativ pe desktop (OpenGL 3.3) si in browser (WebGL 2 prin Emscripten/WASM).
+Interactive 3D tornado simulation with particles, houses, trees and glTF models.
+Runs natively on desktop (OpenGL 3.3) and in the browser (WebGL 2 via Emscripten/WASM).
 
-## Functionalitati
+## Features
 
-- Mesh tornado procedural cu animatie swirl
-- Sistem de particule cu praf interior si debris exterior (2200 particule)
-- Scena cu sol, case, copaci (generate procedural) si modele glTF
-- Iluminare directionala cu specular si Fresnel
-- Camera cu WASD + mouse look (click dreapta)
-- Tornada urmareste pozitia mouse-ului
-- Build dual: nativ (OpenGL 3.3) si browser (WebGL 2 / WASM)
+- Procedural tornado mesh with swirl animation
+- Particle system with inner dust and outer debris (2200 particles)
+- Scene with ground, houses, trees (procedurally generated) and glTF models
+- Directional lighting with specular and Fresnel
+- Camera with WASD + mouse look (right click)
+- Tornado follows the mouse position
+- Dual build: native (OpenGL 3.3) and browser (WebGL 2 / WASM)
 
-## Cerinte
+## Requirements
 
 - **CMake** >= 3.14
-- **Compilator C++17** (g++, clang++)
-- **Emscripten SDK** (pentru build WASM) — [Instalare](https://emscripten.org/docs/getting_started/downloads.html)
-- Conexiune internet la prima configurare (CMake descarca GLFW, GLAD, GLM via FetchContent)
+- **C++17 compiler** (g++, clang++)
+- **Emscripten SDK** (for WASM build) — [Installation](https://emscripten.org/docs/getting_started/downloads.html)
+- Internet connection on first configure (CMake downloads GLFW, GLAD, GLM via FetchContent)
 
-## Build & Run — Desktop (Nativ)
+## Build & Run — Desktop (Native)
 
 ```bash
-# Varianta 1: script
+# Option 1: script
 ./run.sh build
 ./run.sh run
 
-# Varianta 2: manual
+# Option 2: manual
 cmake -B build -S .
 cmake --build build -j$(nproc)
 ./build/tornado
 ```
 
-### Controluri
-| Input | Actiune |
-|-------|---------|
-| Mouse | Controleaza pozitia tornadei |
-| Click dreapta + drag | Roteste camera |
-| W/A/S/D | Misca camera |
+### Controls
+| Input | Action |
+|-------|--------|
+| Mouse | Controls the tornado position |
+| Right click + drag | Rotate camera |
+| W/A/S/D | Move camera |
 
 ## Build & Run — WebAssembly (Browser)
 
-### 1. Instaleaza Emscripten SDK
+### 1. Install Emscripten SDK
 
 ```bash
 git clone https://github.com/emscripten-core/emsdk.git
@@ -52,131 +52,131 @@ cd emsdk
 source ./emsdk_env.sh
 ```
 
-### 2. Compileaza
+### 2. Compile
 
 ```bash
-# Varianta 1: script dedicat
+# Option 1: dedicated script
 ./build_wasm.sh build
 
-# Varianta 2: manual
+# Option 2: manual
 emcmake cmake -B build-wasm -S . -DCMAKE_BUILD_TYPE=Release
 emmake cmake --build build-wasm -j$(nproc)
 ```
 
-### 3. Testeaza in browser
+### 3. Test in Browser
 
 ```bash
-# Varianta 1: script (porneste server automat)
+# Option 1: script (starts server automatically)
 ./build_wasm.sh serve
 
-# Varianta 2: cu emrun
+# Option 2: with emrun
 emrun --no_browser --port 8080 build-wasm/tornado.html
 
-# Varianta 3: cu Python
+# Option 3: with Python
 cd build-wasm && python3 -m http.server 8080
 ```
 
-Apoi deschide **http://localhost:8080/tornado.html** in browser.
+Then open **http://localhost:8080/tornado.html** in your browser.
 
-> **Nota:** WebGL 2 este necesar. Chrome, Firefox si Edge sunt suportate. Safari are suport partial.
+> **Note:** WebGL 2 is required. Chrome, Firefox and Edge are supported. Safari has partial support.
 
-## Teste
+## Tests
 
 ```bash
-# Build si run teste
+# Build and run tests
 cmake --build build --target test_math
 ./build/test_math
 
-# Sau cu CTest
+# Or with CTest
 cd build && ctest --output-on-failure
 ```
 
-Testele acopera:
-- Operatii GLM (vectori, matrice, transformari)
-- Logica de simulare (interpolare tornado, vortex, damping, camera)
-- Adaptarea GLSL (patch #version 330 core -> 300 es)
+Tests cover:
+- GLM operations (vectors, matrices, transforms)
+- Simulation logic (tornado interpolation, vortex, damping, camera)
+- GLSL adaptation (patch #version 330 core -> 300 es)
 
-## Structura proiect
+## Project Structure
 
 ```
-├── CMakeLists.txt          # Build system (dual: nativ + Emscripten)
-├── build_wasm.sh           # Script build WASM
-├── run.sh                  # Script build & run nativ
+├── CMakeLists.txt          # Build system (dual: native + Emscripten)
+├── build_wasm.sh           # WASM build script
+├── run.sh                  # Native build & run script
 ├── web/
-│   └── shell.html          # Template HTML pentru WASM
+│   └── shell.html          # HTML template for WASM
 ├── src/
-│   ├── main.cpp            # Aplicatia principala (AppState + main_loop)
-│   ├── gltf_loader.h       # Loader glTF simplu
-│   ├── tinygltf_impl.cpp   # Implementare tinygltf + stb_image
-│   └── test_math.cpp       # Teste unitare (21 teste)
+│   ├── main.cpp            # Main application (AppState + main_loop)
+│   ├── gltf_loader.h       # Simple glTF loader
+│   ├── tinygltf_impl.cpp   # tinygltf + stb_image implementation
+│   └── test_math.cpp       # Unit tests (21 tests)
 ├── shaders/
-│   ├── vertex.glsl         # Vertex shader principal (swirl)
-│   ├── fragment.glsl       # Fragment shader (obiecte + tornado)
+│   ├── vertex.glsl         # Main vertex shader (swirl)
+│   ├── fragment.glsl       # Fragment shader (objects + tornado)
 │   ├── particle_vertex.glsl
 │   └── particle_fragment.glsl
-├── assets/models/           # Modele glTF (BoxTextured, Avocado)
-└── vendor/                  # Dependinte header-only (tinygltf, stb, json)
+├── assets/models/           # glTF models (BoxTextured, Avocado)
+└── vendor/                  # Header-only dependencies (tinygltf, stb, json)
 ```
 
-## Arhitectura portarii desktop -> WASM
+## Porting Architecture: Desktop -> WASM
 
-### Problema principala
-Emscripten nu suporta bucla infinita `while(!shouldClose)` — browserul controleaza frame-urile.
-Solutia: `emscripten_set_main_loop()` apeleaza o functie callback la fiecare frame.
+### Main Problem
+Emscripten does not support an infinite `while(!shouldClose)` loop — the browser controls frame timing.
+Solution: `emscripten_set_main_loop()` calls a callback function each frame.
 
-### Modificari cheie
+### Key Changes
 
 | Component | Desktop | Emscripten/WASM |
 |-----------|---------|-----------------|
-| GL loader | GLAD | Nu e necesar (ES nativ) |
+| GL loader | GLAD | Not needed (native ES) |
 | GL version | OpenGL 3.3 Core | OpenGL ES 3.0 / WebGL 2 |
-| GLFW | Compilat din sursa | Port Emscripten (-sUSE_GLFW=3) |
-| Shadere | `#version 330 core` | `#version 300 es` + precision |
+| GLFW | Compiled from source | Emscripten port (-sUSE_GLFW=3) |
+| Shaders | `#version 330 core` | `#version 300 es` + precision |
 | Main loop | `while()` | `emscripten_set_main_loop()` |
-| Fisiere | Filesystem real | Virtual FS (--preload-file) |
-| Point size | `glEnable(GL_PROGRAM_POINT_SIZE)` | Implicit activat |
+| Files | Real filesystem | Virtual FS (--preload-file) |
+| Point size | `glEnable(GL_PROGRAM_POINT_SIZE)` | Enabled by default |
 
-### Cum functioneaza adaptarea shaderelor
-Shaderele raman scrise in GLSL 330 core. La incarcare, functia
-`adaptShaderSource()` face patch la runtime:
-- Inlocuieste `#version 330 core` cu `#version 300 es`
-- Adauga `precision highp float;` pentru fragment shaders
+### How Shader Adaptation Works
+Shaders are written in GLSL 330 core. At load time, the
+`adaptShaderSource()` function patches them at runtime:
+- Replaces `#version 330 core` with `#version 300 es`
+- Adds `precision highp float;` for fragment shaders
 
-### State management
-Toate resursele GL si starea simularii sunt intr-un `struct AppState` global,
-accesibil din `main_loop()`. Setup-ul se face o singura data in `main()`.
+### State Management
+All GL resources and simulation state live in a global `struct AppState`,
+accessible from `main_loop()`. Setup is done once in `main()`.
 
-## Debugging & Optimizare WASM
+## Debugging & WASM Optimization
 
 ### Debugging
-- Adauga `-g` la build: `emcmake cmake -B build-wasm -DCMAKE_BUILD_TYPE=Debug`
-- Chrome DevTools → Sources → poti pune breakpoints direct in C++ (source maps)
-- Console.log: `std::cout` si `std::cerr` apar in consola browser-ului
-- Verifica erori WebGL: Chrome → `about:flags` → activeaza "WebGL Developer Extensions"
+- Add `-g` to the build: `emcmake cmake -B build-wasm -DCMAKE_BUILD_TYPE=Debug`
+- Chrome DevTools → Sources → you can set breakpoints directly in C++ (source maps)
+- Console.log: `std::cout` and `std::cerr` appear in the browser console
+- Check WebGL errors: Chrome → `about:flags` → enable "WebGL Developer Extensions"
 
 ### Profiling
-- Chrome DevTools → Performance tab → inregistreaza un frame
-- Emscripten: compileaza cu `--profiling` pentru simboluri in profiler
+- Chrome DevTools → Performance tab → record a frame
+- Emscripten: compile with `--profiling` for symbols in the profiler
 
-### Optimizare
-- Release build: `-O2` sau `-O3` (setat automat cu `-DCMAKE_BUILD_TYPE=Release`)
-- Reduce `MAX_PARTICLES` daca FPS-ul e scazut pe mobile
-- Fa batch draw calls: minimizeaza schimbarile de stare GL intre obiecte
-- Texturile procedurale sunt mici (32x32) — intentionat pentru performanta
+### Optimization
+- Release build: `-O2` or `-O3` (set automatically with `-DCMAKE_BUILD_TYPE=Release`)
+- Reduce `MAX_PARTICLES` if FPS is low on mobile
+- Batch draw calls: minimize GL state changes between objects
+- Procedural textures are small (32x32) — intentional for performance
 
-## Curatare
+## Cleanup
 
 ```bash
-# Sterge build nativ
+# Delete native build
 ./run.sh clean
 
-# Sterge build WASM
+# Delete WASM build
 ./build_wasm.sh clean
 
-# Sterge ambele
+# Delete both
 rm -rf build/ build-wasm/
 ```
 
-## Licenta
+## License
 
-Proiect educational / demo.
+Educational / demo project.
