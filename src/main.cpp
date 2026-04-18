@@ -26,6 +26,8 @@
 #include <chrono>
 #include <string>
 #include <cstddef>
+#include <unordered_set>
+#include <algorithm>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -78,6 +80,12 @@ static const float LIGHTNING_MIN_INTERVAL = 2.0f;
 static const float LIGHTNING_MAX_INTERVAL = 7.0f;
 static const float LIGHTNING_DECAY       = 8.0f;
 
+// World chunks (procedural infinite world)
+static const float CHUNK_SIZE            = 20.0f;
+static const int   CHUNK_RADIUS          = 3;      // chunks around player
+static const int   HOUSES_PER_CHUNK      = 3;
+static const int   TREES_PER_CHUNK       = 5;
+
 // Uniform location caches
 struct MainUniforms {
     GLint proj=-1, view=-1, model=-1, normalMat=-1, time=-1, camPos=-1;
@@ -119,6 +127,7 @@ struct DestructibleHouse {
     glm::vec3 pos;
     float health = 1.0f;
     bool destroyed = false;
+    int chunkX = 0, chunkZ = 0;  // which chunk owns this
 };
 
 struct Debris {
@@ -139,6 +148,22 @@ struct LightningState {
 
 struct RainParticle {
     glm::vec3 pos;
+};
+
+struct ChunkTree {
+    glm::vec3 pos;
+    int chunkX = 0, chunkZ = 0;
+};
+
+// Track which chunks are currently loaded
+struct ChunkKey {
+    int x, z;
+    bool operator==(const ChunkKey& o) const { return x==o.x && z==o.z; }
+};
+struct ChunkKeyHash {
+    size_t operator()(const ChunkKey& k) const {
+        return std::hash<int>()(k.x) ^ (std::hash<int>()(k.z) << 16);
+    }
 };
 
 // All state that main_loop() needs, collected in one place so both
@@ -206,6 +231,10 @@ struct AppState {
     // Mouse-look state
     bool   mouseLookActive = false;
     double lastMx = 0.0, lastMy = 0.0;
+
+    // Chunk system
+    std::vector<ChunkTree> chunkTrees;
+    std::unordered_set<ChunkKey, ChunkKeyHash> loadedChunks;
 };
 
 // ── Global state ─────────────────────────────────────────────────────
@@ -343,6 +372,88 @@ static void spawnDebris(const glm::vec3& pos, int count) {
     }
 }
 
+// ── Generate objects for a chunk (deterministic by chunk coords) ─────
+static void generateChunk(int cx, int cz) {
+    ChunkKey key{cx, cz};
+    if (app.loadedChunks.count(key)) return;
+    app.loadedChunks.insert(key);
+
+    // Deterministic seed from chunk coords
+    uint32_t seed = (uint32_t)(cx * 73856093) ^ (uint32_t)(cz * 19349663);
+    std::mt19937 cRng(seed);
+    std::uniform_real_distribution<float> r01(0.0f, 1.0f);
+
+    float ox = cx * CHUNK_SIZE;
+    float oz = cz * CHUNK_SIZE;
+
+    // Houses
+    for (int i = 0; i < HOUSES_PER_CHUNK; ++i) {
+        DestructibleHouse h;
+        h.pos = glm::vec3(ox + r01(cRng) * CHUNK_SIZE,
+                           0.0f,
+                           oz + r01(cRng) * CHUNK_SIZE);
+        h.health = 1.0f;
+        h.destroyed = false;
+        h.chunkX = cx;
+        h.chunkZ = cz;
+        app.houses.push_back(h);
+    }
+    // Trees
+    for (int i = 0; i < TREES_PER_CHUNK; ++i) {
+        ChunkTree t;
+        t.pos = glm::vec3(ox + r01(cRng) * CHUNK_SIZE,
+                           0.0f,
+                           oz + r01(cRng) * CHUNK_SIZE);
+        t.chunkX = cx;
+        t.chunkZ = cz;
+        app.chunkTrees.push_back(t);
+    }
+}
+
+// ── Update loaded chunks around player position ──────────────────────
+static void updateChunks(const glm::vec3& playerPos) {
+    int pcx = (int)floorf(playerPos.x / CHUNK_SIZE);
+    int pcz = (int)floorf(playerPos.z / CHUNK_SIZE);
+
+    // Generate new chunks in radius
+    for (int dx = -CHUNK_RADIUS; dx <= CHUNK_RADIUS; ++dx) {
+        for (int dz = -CHUNK_RADIUS; dz <= CHUNK_RADIUS; ++dz) {
+            generateChunk(pcx + dx, pcz + dz);
+        }
+    }
+
+    // Remove chunks too far away
+    int removeRadius = CHUNK_RADIUS + 2;
+    auto chunkTooFar = [&](int cx, int cz) {
+        return std::abs(cx - pcx) > removeRadius ||
+               std::abs(cz - pcz) > removeRadius;
+    };
+
+    // Remove far houses (skip destroyed ones that had debris — keep debris alive)
+    app.houses.erase(
+        std::remove_if(app.houses.begin(), app.houses.end(),
+            [&](const DestructibleHouse& h) {
+                return chunkTooFar(h.chunkX, h.chunkZ);
+            }),
+        app.houses.end());
+
+    // Remove far trees
+    app.chunkTrees.erase(
+        std::remove_if(app.chunkTrees.begin(), app.chunkTrees.end(),
+            [&](const ChunkTree& t) {
+                return chunkTooFar(t.chunkX, t.chunkZ);
+            }),
+        app.chunkTrees.end());
+
+    // Untrack removed chunks
+    for (auto it = app.loadedChunks.begin(); it != app.loadedChunks.end(); ) {
+        if (chunkTooFar(it->x, it->z))
+            it = app.loadedChunks.erase(it);
+        else
+            ++it;
+    }
+}
+
 // ── GLFW callback ────────────────────────────────────────────────────
 static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
     int w, h;
@@ -367,9 +478,37 @@ static void main_loop() {
 
     float t = (float)nowT - s.startTime;
 
-    // -- Tornado follows mouse smoothly --
-    glm::vec2 target(g_mouseX * 10.0f, g_mouseY * -1.0f * 10.0f);
-    s.tornadoPos = s.tornadoPos * 0.95f + target * 0.05f;
+    // -- Update chunks around player --
+    updateChunks(s.camera.pos);
+
+    // -- Tornado follows mouse via ground-plane raycast --
+    {
+        int w, h;
+        glfwGetFramebufferSize(s.window, &w, &h);
+        float aspect = (w > 0 && h > 0) ? (float)w / (float)h : 1.0f;
+        glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 200.0f);
+        glm::mat4 view = s.camera.getView();
+        glm::mat4 invVP = glm::inverse(proj * view);
+
+        // NDC from mouse
+        glm::vec4 nearNDC(g_mouseX, g_mouseY, -1.0f, 1.0f);
+        glm::vec4 farNDC(g_mouseX, g_mouseY, 1.0f, 1.0f);
+        glm::vec4 nearW = invVP * nearNDC; nearW /= nearW.w;
+        glm::vec4 farW  = invVP * farNDC;  farW  /= farW.w;
+
+        glm::vec3 rayO(nearW);
+        glm::vec3 rayD = glm::normalize(glm::vec3(farW) - rayO);
+
+        // Intersect with y=0 plane
+        if (fabsf(rayD.y) > 0.0001f) {
+            float tHit = -rayO.y / rayD.y;
+            if (tHit > 0.0f) {
+                glm::vec3 hit = rayO + rayD * tHit;
+                glm::vec2 target(hit.x, hit.z);
+                s.tornadoPos = glm::mix(s.tornadoPos, target, 1.0f - expf(-6.0f * dt));
+            }
+        }
+    }
 
     // ── Destruction: damage houses near tornado ──
     for (auto& h : s.houses) {
@@ -558,13 +697,9 @@ static void main_loop() {
 
         glUniform1f(mu.windBend, 1.5f);
 
-        static const glm::vec3 treePos[] = {
-            {-3,0,-5}, {3,0,-4}, {-6,0,2}, {5,0,6}, {-2,0,7}, {8,0,-2},
-            {-8,0,-4}, {7,0,7}, {-4,0,9}, {10,0,1}, {-1,0,-9}, {4,0,-3}
-        };
-        for (const auto& tp : treePos) {
+        for (const auto& ct : s.chunkTrees) {
             glm::mat4 model = glm::scale(
-                glm::translate(glm::mat4(1.0f), tp), glm::vec3(2.0f));
+                glm::translate(glm::mat4(1.0f), ct.pos), glm::vec3(2.0f));
             glm::mat3 nm = normalMat3(model);
             glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
             glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
@@ -1013,10 +1148,10 @@ int main() {
     {
         struct SV { glm::vec3 pos; glm::vec3 normal; glm::vec3 col; };
         std::vector<SV> gv = {
-            {{-50,0,-50},{0,1,0},{0.15f,0.45f,0.2f}},
-            {{ 50,0,-50},{0,1,0},{0.15f,0.45f,0.2f}},
-            {{ 50,0, 50},{0,1,0},{0.15f,0.45f,0.2f}},
-            {{-50,0, 50},{0,1,0},{0.15f,0.45f,0.2f}},
+            {{-500,0,-500},{0,1,0},{0.15f,0.45f,0.2f}},
+            {{ 500,0,-500},{0,1,0},{0.15f,0.45f,0.2f}},
+            {{ 500,0, 500},{0,1,0},{0.15f,0.45f,0.2f}},
+            {{-500,0, 500},{0,1,0},{0.15f,0.45f,0.2f}},
         };
         std::vector<unsigned int> gi = {0,1,2, 0,2,3};
         glGenVertexArrays(1, &app.groundVAO);
@@ -1229,22 +1364,9 @@ int main() {
     }
 
     // ══════════════════════════════════════
-    // Initialize destructible houses
+    // Initialize world chunks around start position
     // ══════════════════════════════════════
-    {
-        glm::vec3 housePositions[] = {
-            {-5,0,-3}, {4,0,-6}, {-7,0,5}, {6,0,4},
-            {-3,0,-8}, {8,0,0}, {-9,0,-1}, {2,0,8},
-            {-6,0,8}, {9,0,-5}
-        };
-        for (const auto& hp : housePositions) {
-            DestructibleHouse dh;
-            dh.pos = hp;
-            dh.health = 1.0f;
-            dh.destroyed = false;
-            app.houses.push_back(dh);
-        }
-    }
+    updateChunks(app.camera.pos);
 
     // ══════════════════════════════════════
     // Rain particles + VAO/VBO
