@@ -2,37 +2,51 @@
 <html lang="ro">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Tornada 3D — WebAssembly</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
+        html, body {
             background: #1a1a2e;
             color: #eee;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            width: 100%; height: 100%;
+            overflow: hidden;
+            touch-action: none;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        body {
             display: flex;
             flex-direction: column;
             align-items: center;
-            min-height: 100vh;
         }
         h1 {
-            margin: 12px 0 4px;
-            font-size: 1.4rem;
+            margin: 6px 0 2px;
+            font-size: clamp(0.9rem, 2.5vw, 1.4rem);
             color: #7ec8e3;
         }
         #info {
-            font-size: 0.85rem;
+            font-size: clamp(0.65rem, 1.5vw, 0.85rem);
             color: #aaa;
-            margin-bottom: 8px;
+            margin-bottom: 4px;
+            text-align: center;
+            padding: 0 8px;
         }
         #canvas-container {
             position: relative;
+            flex: 1;
+            width: 100%;
+            max-width: 1920px;
             border: 2px solid #333;
             border-radius: 6px;
             overflow: hidden;
         }
         canvas.emscripten {
             display: block;
+            width: 100% !important;
+            height: 100% !important;
             background: #000;
         }
         #spinner {
@@ -40,6 +54,7 @@
             top: 50%; left: 50%;
             transform: translate(-50%, -50%);
             text-align: center;
+            z-index: 10;
         }
         #spinner .loader {
             width: 48px; height: 48px;
@@ -52,23 +67,84 @@
         @keyframes spin { to { transform: rotate(360deg); } }
         #spinner.hidden { display: none; }
         #status {
-            font-size: 0.8rem;
+            font-size: 0.7rem;
             color: #888;
-            margin-top: 6px;
+            padding: 2px 0;
+        }
+
+        /* Mobile touch controls overlay */
+        .touch-zone {
+            display: none;
+            position: absolute;
+            bottom: 0;
+            width: 50%;
+            height: 40%;
+            z-index: 5;
+            pointer-events: auto;
+        }
+        .touch-zone-left { left: 0; }
+        .touch-zone-right { right: 0; }
+        .touch-indicator {
+            position: absolute;
+            border: 2px solid rgba(126,200,227,0.5);
+            border-radius: 50%;
+            pointer-events: none;
+            display: none;
+        }
+        #joystick-base {
+            width: 100px; height: 100px;
+            bottom: 30px; left: 30px;
+        }
+        #joystick-knob {
+            width: 44px; height: 44px;
+            background: rgba(126,200,227,0.35);
+            bottom: 58px; left: 58px;
+        }
+        #look-indicator {
+            width: 60px; height: 60px;
+            border-color: rgba(255,200,100,0.4);
+            background: rgba(255,200,100,0.15);
+        }
+        .mobile-hint {
+            display: none;
+            position: absolute;
+            bottom: 8px;
+            font-size: 0.6rem;
+            color: rgba(255,255,255,0.4);
+            pointer-events: none;
+            z-index: 6;
+        }
+        #hint-left { left: 12px; }
+        #hint-right { right: 12px; }
+
+        @media (hover: none) and (pointer: coarse) {
+            .touch-zone { display: block; }
+            .mobile-hint { display: block; }
+            #joystick-base { display: block; }
+            #info { display: none; }
         }
     </style>
 </head>
 <body>
     <h1>Tornada 3D</h1>
-    <p id="info">Muta mouse-ul pentru a controla tornada | WASD = misca camera | Click dreapta + drag = roteste camera</p>
+    <p id="info">Mouse = tornado | WASD = camera | Click dreapta + drag = roteste</p>
 
     <div id="canvas-container">
-        <canvas class="emscripten" id="canvas" width="1280" height="720"
+        <canvas class="emscripten" id="canvas"
                 oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
         <div id="spinner">
             <div class="loader"></div>
             <div>Se incarca...</div>
         </div>
+
+        <!-- Mobile touch zones -->
+        <div class="touch-zone touch-zone-left" id="zone-left"></div>
+        <div class="touch-zone touch-zone-right" id="zone-right"></div>
+        <div class="touch-indicator" id="joystick-base"></div>
+        <div class="touch-indicator" id="joystick-knob"></div>
+        <div class="touch-indicator" id="look-indicator"></div>
+        <span class="mobile-hint" id="hint-left">&#x2B05; MOVE</span>
+        <span class="mobile-hint" id="hint-right">LOOK &#x27A1;</span>
     </div>
 
     <div id="status"></div>
@@ -90,6 +166,7 @@
             onRuntimeInitialized: function() {
                 spinnerElement.classList.add('hidden');
                 statusElement.textContent = 'Rulare...';
+                initTouchControls();
             },
             monitorRunDependencies: function(left) {
                 if (left === 0) {
@@ -100,6 +177,149 @@
             }
         };
 
+        // ── Responsive canvas sizing ─────────────────────────────
+        function resizeCanvas() {
+            var container = document.getElementById('canvas-container');
+            var canvas = document.getElementById('canvas');
+            var dpr = window.devicePixelRatio || 1;
+            var w = container.clientWidth;
+            var h = container.clientHeight;
+            // Set actual pixel resolution (capped for performance on mobile)
+            var maxDim = ('ontouchstart' in window) ? 1280 : 1920;
+            var scale = Math.min(1, maxDim / Math.max(w * dpr, 1));
+            canvas.width  = Math.floor(w * dpr * scale);
+            canvas.height = Math.floor(h * dpr * scale);
+        }
+        window.addEventListener('resize', resizeCanvas);
+        // Initial size set after a tick so container has layout
+        setTimeout(resizeCanvas, 0);
+
+        // ── Touch controls ───────────────────────────────────────
+        function initTouchControls() {
+            var isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+            if (!isTouchDevice) return;
+
+            var canvas = document.getElementById('canvas');
+            var container = document.getElementById('canvas-container');
+            var joyBase = document.getElementById('joystick-base');
+            var joyKnob = document.getElementById('joystick-knob');
+            var lookInd = document.getElementById('look-indicator');
+
+            var moveTouch = null;  // touch ID for movement
+            var lookTouch = null;  // touch ID for camera look
+            var tornadoTouch = null; // touch ID for tornado control
+            var moveOrigin = {x:0, y:0};
+            var lookLast = {x:0, y:0};
+            var joyRadius = 50;
+
+            function getTouchXY(t) {
+                var r = container.getBoundingClientRect();
+                return {x: t.clientX - r.left, y: t.clientY - r.top};
+            }
+
+            function isLeftHalf(pos) {
+                return pos.x < container.clientWidth * 0.5;
+            }
+
+            function updateTornadoCursor(pos) {
+                var cw = container.clientWidth, ch = container.clientHeight;
+                var nx =  (pos.x / cw) * 2.0 - 1.0;
+                var ny = -((pos.y / ch) * 2.0 - 1.0);
+                if (Module._touch_set_cursor) {
+                    Module._touch_set_cursor(nx, ny);
+                }
+            }
+
+            container.addEventListener('touchstart', function(e) {
+                e.preventDefault();
+                for (var i = 0; i < e.changedTouches.length; i++) {
+                    var t = e.changedTouches[i];
+                    var pos = getTouchXY(t);
+
+                    if (isLeftHalf(pos) && moveTouch === null) {
+                        // Left side: virtual joystick
+                        moveTouch = t.identifier;
+                        moveOrigin = pos;
+                        joyBase.style.left = (pos.x - joyRadius) + 'px';
+                        joyBase.style.bottom = 'auto';
+                        joyBase.style.top = (pos.y - joyRadius) + 'px';
+                        joyBase.style.display = 'block';
+                        joyKnob.style.left = (pos.x - 22) + 'px';
+                        joyKnob.style.bottom = 'auto';
+                        joyKnob.style.top = (pos.y - 22) + 'px';
+                        joyKnob.style.display = 'block';
+                    } else if (!isLeftHalf(pos) && lookTouch === null) {
+                        // Right side: camera look
+                        lookTouch = t.identifier;
+                        lookLast = pos;
+                        if (Module._touch_set_look) Module._touch_set_look(0, 0, 1);
+                    }
+
+                    // Any touch also steers tornado
+                    if (tornadoTouch === null) {
+                        tornadoTouch = t.identifier;
+                        updateTornadoCursor(pos);
+                    }
+                }
+            }, {passive: false});
+
+            container.addEventListener('touchmove', function(e) {
+                e.preventDefault();
+                for (var i = 0; i < e.changedTouches.length; i++) {
+                    var t = e.changedTouches[i];
+                    var pos = getTouchXY(t);
+
+                    if (t.identifier === moveTouch) {
+                        var dx = pos.x - moveOrigin.x;
+                        var dy = pos.y - moveOrigin.y;
+                        var dist = Math.sqrt(dx*dx + dy*dy);
+                        var clampDist = Math.min(dist, joyRadius);
+                        var nx = (dist > 0) ? (dx / dist) * clampDist / joyRadius : 0;
+                        var ny = (dist > 0) ? -(dy / dist) * clampDist / joyRadius : 0;
+                        if (Module._touch_set_move) Module._touch_set_move(nx, ny);
+                        joyKnob.style.left = (moveOrigin.x + nx * joyRadius - 22) + 'px';
+                        joyKnob.style.top = (moveOrigin.y - ny * joyRadius - 22) + 'px';
+                    }
+
+                    if (t.identifier === lookTouch) {
+                        var ldx = pos.x - lookLast.x;
+                        var ldy = lookLast.y - pos.y;  // inverted Y
+                        lookLast = pos;
+                        if (Module._touch_set_look) Module._touch_set_look(ldx, ldy, 1);
+                    }
+
+                    if (t.identifier === tornadoTouch) {
+                        updateTornadoCursor(pos);
+                    }
+                }
+            }, {passive: false});
+
+            function endTouch(e) {
+                for (var i = 0; i < e.changedTouches.length; i++) {
+                    var t = e.changedTouches[i];
+                    if (t.identifier === moveTouch) {
+                        moveTouch = null;
+                        if (Module._touch_set_move) Module._touch_set_move(0, 0);
+                        joyBase.style.display = 'none';
+                        joyKnob.style.display = 'none';
+                    }
+                    if (t.identifier === lookTouch) {
+                        lookTouch = null;
+                        if (Module._touch_set_look) Module._touch_set_look(0, 0, 0);
+                    }
+                    if (t.identifier === tornadoTouch) {
+                        tornadoTouch = null;
+                    }
+                }
+            }
+
+            container.addEventListener('touchend', endTouch, {passive: false});
+            container.addEventListener('touchcancel', endTouch, {passive: false});
+        }
+    </script>
+    {{{ SCRIPT }}}
+</body>
+</html>
         Module.setStatus('Se descarca...');
         window.onerror = function() {
             Module.setStatus('Eroare la initializare!');

@@ -296,6 +296,31 @@ static AppState  app;
 static double    g_mouseX = 0.0;
 static double    g_mouseY = 0.0;
 
+// Touch input state (set from JavaScript on mobile)
+static float g_touchMoveX  = 0.0f;  // virtual joystick -1..1
+static float g_touchMoveY  = 0.0f;
+static float g_touchLookDX = 0.0f;  // camera look delta (pixels/frame)
+static float g_touchLookDY = 0.0f;
+static bool  g_touchLookActive = false;
+
+#ifdef PLATFORM_EMSCRIPTEN
+extern "C" {
+    EMSCRIPTEN_KEEPALIVE void touch_set_move(float x, float y) {
+        g_touchMoveX = x;
+        g_touchMoveY = y;
+    }
+    EMSCRIPTEN_KEEPALIVE void touch_set_look(float dx, float dy, int active) {
+        g_touchLookDX = dx;
+        g_touchLookDY = dy;
+        g_touchLookActive = (active != 0);
+    }
+    EMSCRIPTEN_KEEPALIVE void touch_set_cursor(float nx, float ny) {
+        g_mouseX = nx;
+        g_mouseY = ny;
+    }
+}
+#endif
+
 // ── Utility: file loading ────────────────────────────────────────────
 static std::string loadFile(const char* path) {
     std::vector<std::string> tries;
@@ -734,6 +759,15 @@ static void main_loop() {
         s.mouseLookActive = false;
     }
 
+    // Touch camera look (from virtual right-side drag on mobile)
+    if (g_touchLookActive) {
+        s.camera.yaw   += g_touchLookDX * s.camera.sensitivity;
+        s.camera.pitch += g_touchLookDY * s.camera.sensitivity;
+        s.camera.pitch  = glm::clamp(s.camera.pitch, -89.0f, 89.0f);
+        g_touchLookDX = 0.0f;
+        g_touchLookDY = 0.0f;
+    }
+
     // -- Camera: WASD --
     glm::vec3 forward;
     forward.x = cosf(glm::radians(s.camera.yaw)) * cosf(glm::radians(s.camera.pitch));
@@ -745,6 +779,17 @@ static void main_loop() {
     if (glfwGetKey(s.window, GLFW_KEY_S) == GLFW_PRESS) s.camera.pos -= forward * s.camera.speed * dt;
     if (glfwGetKey(s.window, GLFW_KEY_A) == GLFW_PRESS) s.camera.pos -= right   * s.camera.speed * dt;
     if (glfwGetKey(s.window, GLFW_KEY_D) == GLFW_PRESS) s.camera.pos += right   * s.camera.speed * dt;
+
+    // Virtual joystick (mobile touch)
+    if (fabsf(g_touchMoveX) > 0.05f || fabsf(g_touchMoveY) > 0.05f) {
+        glm::vec3 fwd2d = glm::normalize(glm::vec3(forward.x, 0.0f, forward.z));
+        glm::vec3 rgt2d = glm::normalize(glm::cross(fwd2d, glm::vec3(0,1,0)));
+        s.camera.pos += fwd2d * g_touchMoveY * s.camera.speed * dt;
+        s.camera.pos += rgt2d * g_touchMoveX * s.camera.speed * dt;
+    }
+
+    // Clamp camera above ground (min height 0.5 units)
+    if (s.camera.pos.y < 0.5f) s.camera.pos.y = 0.5f;
 
     // -- Framebuffer / clear --
     int width, height;

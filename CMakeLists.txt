@@ -63,6 +63,8 @@ if(USING_EMSCRIPTEN)
         "SHELL:-s MAX_WEBGL_VERSION=2"
         "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets@assets"
         "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/shaders@shaders"
+        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_touch_set_move','_touch_set_look','_touch_set_cursor']"
+        "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
     )
 
     # Use custom HTML shell if it exists
