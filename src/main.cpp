@@ -117,17 +117,26 @@ static const float POWERUP_BOB_HEIGHT     = 0.3f;
 static const float MINIMAP_RADIUS        = 60.0f;   // world-space range
 static const float MINIMAP_NDC_SIZE      = 0.22f;   // screen fraction
 
+// Terrain heightmap
+static const int   TERRAIN_GRID          = 128;      // cells per axis
+static const float TERRAIN_EXTENT        = 200.0f;   // half-size in world units
+static const float WATER_LEVEL           = 0.3f;     // Y where water surface sits
+
+// Day/night cycle
+static const float DAY_CYCLE_SPEED       = 0.015f;   // full cycle ~67 seconds
+
 // Uniform location caches
 struct MainUniforms {
     GLint proj=-1, view=-1, model=-1, normalMat=-1, time=-1, camPos=-1;
     GLint enableSwirl=-1, tint=-1, opacity=-1, objType=-1, hasAlbedo=-1, albedo=-1;
     GLint lightningFlash=-1, windBend=-1, windSource=-1;
+    GLint timeOfDay=-1, waterLevel=-1;
 };
 struct ParticleUniforms {
     GLint proj=-1, view=-1, model=-1, color=-1, pointScale=-1;
 };
 struct SkyUniforms {
-    GLint lightningFlash=-1, time=-1;
+    GLint lightningFlash=-1, time=-1, timeOfDay=-1;
 };
 struct RainUniforms {
     GLint proj=-1, view=-1;
@@ -267,8 +276,16 @@ struct AppState {
     GLuint tornadoVAO = 0, tornadoVBO = 0, tornadoEBO = 0;
     GLsizei tornadoIndexCount = 0;
 
-    // Ground
+    // Ground / terrain
     GLuint groundVAO = 0, groundVBO = 0, groundEBO = 0;
+    GLsizei terrainIndexCount = 0;  // replaces hardcoded 6
+
+    // Water
+    GLuint waterVAO = 0, waterVBO = 0, waterEBO = 0;
+    GLsizei waterIndexCount = 0;
+
+    // Day/night
+    float dayTime = 0.25f;  // 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
 
     // Scene models
     SimpleModel house;
@@ -332,6 +349,7 @@ struct AppState {
     // Ground scorch marks
     std::vector<ScorchMark> scorchMarks;
     float scorchTimer = 0.0f;
+    GLuint scorchVAO = 0, scorchVBO = 0, scorchEBO = 0; // simple flat quad for scorch
 
     // Particles
     GLuint particleVAO = 0, particleVBO = 0;
@@ -514,6 +532,52 @@ static void spawnDebris(const glm::vec3& pos, int count) {
     }
 }
 
+// ── Procedural terrain noise ─────────────────────────────────────────
+static float hashNoise(int ix, int iz) {
+    int n = ix * 374761393 + iz * 668265263;
+    n = (n << 13) ^ n;
+    return 1.0f - (float)((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0f;
+}
+
+static float smoothNoise(float x, float z) {
+    int ix = (int)floorf(x);
+    int iz = (int)floorf(z);
+    float fx = x - ix;
+    float fz = z - iz;
+    // Smoothstep
+    fx = fx * fx * (3.0f - 2.0f * fx);
+    fz = fz * fz * (3.0f - 2.0f * fz);
+    float a = hashNoise(ix, iz);
+    float b = hashNoise(ix + 1, iz);
+    float c = hashNoise(ix, iz + 1);
+    float d = hashNoise(ix + 1, iz + 1);
+    return a + fx * (b - a) + fz * (c - a) + fx * fz * (a - b - c + d);
+}
+
+static float fbmNoise(float x, float z, int octaves, float persistence = 0.5f) {
+    float total = 0.0f, amplitude = 1.0f, frequency = 1.0f, maxVal = 0.0f;
+    for (int i = 0; i < octaves; ++i) {
+        total += smoothNoise(x * frequency, z * frequency) * amplitude;
+        maxVal += amplitude;
+        amplitude *= persistence;
+        frequency *= 2.0f;
+    }
+    return total / maxVal;
+}
+
+// Get terrain height at any world position
+static float getTerrainHeight(float x, float z) {
+    // Large-scale hills/mountains
+    float h = fbmNoise(x * 0.012f, z * 0.012f, 5, 0.55f) * 6.0f;
+    // Medium ridges
+    h += fbmNoise(x * 0.035f + 50.0f, z * 0.035f + 50.0f, 3, 0.5f) * 1.5f;
+    // Flatten near origin so player starts on flat ground
+    float dist = sqrtf(x * x + z * z);
+    float flatFactor = glm::smoothstep(8.0f, 50.0f, dist);
+    h *= flatFactor;
+    return h;
+}
+
 // ── Generate objects for a chunk (deterministic by chunk coords) ─────
 static void generateChunk(int cx, int cz) {
     ChunkKey key{cx, cz};
@@ -530,10 +594,12 @@ static void generateChunk(int cx, int cz) {
 
     // Houses
     for (int i = 0; i < HOUSES_PER_CHUNK; ++i) {
+        float px = ox + r01(cRng) * CHUNK_SIZE;
+        float pz = oz + r01(cRng) * CHUNK_SIZE;
+        float py = getTerrainHeight(px, pz);
+        if (py < WATER_LEVEL + 0.2f) continue; // skip water areas
         DestructibleHouse h;
-        h.pos = glm::vec3(ox + r01(cRng) * CHUNK_SIZE,
-                           0.0f,
-                           oz + r01(cRng) * CHUNK_SIZE);
+        h.pos = glm::vec3(px, py, pz);
         h.health = 1.0f;
         h.destroyed = false;
         h.chunkX = cx;
@@ -542,10 +608,12 @@ static void generateChunk(int cx, int cz) {
     }
     // Trees
     for (int i = 0; i < TREES_PER_CHUNK; ++i) {
+        float px = ox + r01(cRng) * CHUNK_SIZE;
+        float pz = oz + r01(cRng) * CHUNK_SIZE;
+        float py = getTerrainHeight(px, pz);
+        if (py < WATER_LEVEL + 0.1f) continue; // skip water areas
         ChunkTree t;
-        t.pos = glm::vec3(ox + r01(cRng) * CHUNK_SIZE,
-                           0.0f,
-                           oz + r01(cRng) * CHUNK_SIZE);
+        t.pos = glm::vec3(px, py, pz);
         t.chunkX = cx;
         t.chunkZ = cz;
         t.health = 1.0f;
@@ -554,27 +622,36 @@ static void generateChunk(int cx, int cz) {
     }
     // Props: fences, cars, poles
     for (int i = 0; i < FENCES_PER_CHUNK; ++i) {
+        float px = ox + r01(cRng) * CHUNK_SIZE;
+        float pz = oz + r01(cRng) * CHUNK_SIZE;
+        float py = getTerrainHeight(px, pz);
+        if (py < WATER_LEVEL + 0.15f) continue;
         ChunkProp p;
-        p.pos = glm::vec3(ox + r01(cRng) * CHUNK_SIZE, 0.0f,
-                           oz + r01(cRng) * CHUNK_SIZE);
+        p.pos = glm::vec3(px, py, pz);
         p.chunkX = cx; p.chunkZ = cz;
         p.propType = 0; // fence
         p.yaw = r01(cRng) * 6.28f;
         app.chunkProps.push_back(p);
     }
     for (int i = 0; i < CARS_PER_CHUNK; ++i) {
+        float px = ox + r01(cRng) * CHUNK_SIZE;
+        float pz = oz + r01(cRng) * CHUNK_SIZE;
+        float py = getTerrainHeight(px, pz);
+        if (py < WATER_LEVEL + 0.15f) continue;
         ChunkProp p;
-        p.pos = glm::vec3(ox + r01(cRng) * CHUNK_SIZE, 0.0f,
-                           oz + r01(cRng) * CHUNK_SIZE);
+        p.pos = glm::vec3(px, py, pz);
         p.chunkX = cx; p.chunkZ = cz;
         p.propType = 1; // car
         p.yaw = r01(cRng) * 6.28f;
         app.chunkProps.push_back(p);
     }
     for (int i = 0; i < POLES_PER_CHUNK; ++i) {
+        float px = ox + r01(cRng) * CHUNK_SIZE;
+        float pz = oz + r01(cRng) * CHUNK_SIZE;
+        float py = getTerrainHeight(px, pz);
+        if (py < WATER_LEVEL + 0.1f) continue;
         ChunkProp p;
-        p.pos = glm::vec3(ox + r01(cRng) * CHUNK_SIZE, 0.0f,
-                           oz + r01(cRng) * CHUNK_SIZE);
+        p.pos = glm::vec3(px, py, pz);
         p.chunkX = cx; p.chunkZ = cz;
         p.propType = 2; // pole
         p.yaw = 0.0f;
@@ -841,7 +918,12 @@ static void main_loop() {
     // -- Update chunks around player --
     updateChunks(s.camera.pos);
 
+    // -- Day/night cycle --
+    s.dayTime += DAY_CYCLE_SPEED * dt;
+    if (s.dayTime > 1.0f) s.dayTime -= 1.0f;
+
     // -- Tornado follows mouse via ground-plane raycast --
+    // Now intersects terrain instead of y=0
     {
         int w, h;
         glfwGetFramebufferSize(s.window, &w, &h);
@@ -859,14 +941,25 @@ static void main_loop() {
         glm::vec3 rayO(nearW);
         glm::vec3 rayD = glm::normalize(glm::vec3(farW) - rayO);
 
-        // Intersect with y=0 plane
-        if (fabsf(rayD.y) > 0.0001f) {
-            float tHit = -rayO.y / rayD.y;
-            if (tHit > 0.0f) {
-                glm::vec3 hit = rayO + rayD * tHit;
-                glm::vec2 target(hit.x, hit.z);
-                s.tornadoPos = glm::mix(s.tornadoPos, target, 1.0f - expf(-6.0f * dt));
+        // March ray to find terrain intersection
+        float bestT = -1.0f;
+        for (float step = 0.5f; step < 150.0f; step += 0.5f) {
+            glm::vec3 p = rayO + rayD * step;
+            float th = getTerrainHeight(p.x, p.z);
+            if (p.y <= th) {
+                bestT = step;
+                break;
             }
+        }
+        // Fallback: intersect y=0 plane
+        if (bestT < 0.0f && fabsf(rayD.y) > 0.0001f) {
+            float tHit = -rayO.y / rayD.y;
+            if (tHit > 0.0f) bestT = tHit;
+        }
+        if (bestT > 0.0f) {
+            glm::vec3 hit = rayO + rayD * bestT;
+            glm::vec2 target(hit.x, hit.z);
+            s.tornadoPos = glm::mix(s.tornadoPos, target, 1.0f - expf(-6.0f * dt));
         }
     }
 
@@ -1071,9 +1164,10 @@ static void main_loop() {
         d.vel *= (1.0f - 1.2f * dt);
         d.pos += d.vel * dt;
         d.rotAngle += d.angVel * dt;
-        // Ground bounce
-        if (d.pos.y < 0.0f) {
-            d.pos.y = 0.0f;
+        // Ground bounce (terrain-aware)
+        float groundH = getTerrainHeight(d.pos.x, d.pos.z);
+        if (d.pos.y < groundH) {
+            d.pos.y = groundH;
             d.vel.y = -d.vel.y * 0.3f;
             d.vel.x *= 0.7f; d.vel.z *= 0.7f;
             d.angVel *= 0.7f;
@@ -1152,8 +1246,11 @@ static void main_loop() {
         s.camera.pos += rgt2d * g_touchMoveX * s.camera.speed * dt;
     }
 
-    // Clamp camera above ground (min height 0.5 units)
-    if (s.camera.pos.y < 0.5f) s.camera.pos.y = 0.5f;
+    // Clamp camera above terrain (min 1.5 units above ground)
+    float terrainAtCam = getTerrainHeight(s.camera.pos.x, s.camera.pos.z);
+    float minCamY = terrainAtCam + 1.5f;
+    if (minCamY < 0.5f) minCamY = 0.5f; // absolute minimum
+    if (s.camera.pos.y < minCamY) s.camera.pos.y = minCamY;
 
     // -- Framebuffer / clear --
     int width, height;
@@ -1167,6 +1264,7 @@ static void main_loop() {
     glUseProgram(s.skyProgram);
     glUniform1f(s.su.lightningFlash, s.lightning.intensity);
     glUniform1f(s.su.time, t);
+    glUniform1f(s.su.timeOfDay, s.dayTime);
     glBindVertexArray(s.skyVAO);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glEnable(GL_DEPTH_TEST);
@@ -1192,8 +1290,10 @@ static void main_loop() {
     glUniform1f(mu.lightningFlash, s.lightning.intensity);
     glUniform1f(mu.windBend, 0.0f);
     glUniform3f(mu.windSource, s.tornadoPos.x, 0.0f, s.tornadoPos.y);
+    glUniform1f(mu.timeOfDay, s.dayTime);
+    glUniform1f(mu.waterLevel, WATER_LEVEL);
 
-    // -- Ground --
+    // -- Terrain ground --
     {
         glm::mat4 model(1.0f);
         glm::mat3 nm = normalMat3(model);
@@ -1205,7 +1305,25 @@ static void main_loop() {
         glUniform1i(mu.objType, 3);
         glUniform1i(mu.hasAlbedo, 0);
         glBindVertexArray(s.groundVAO);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+        glDrawElements(GL_TRIANGLES, s.terrainIndexCount, GL_UNSIGNED_INT, nullptr);
+    }
+
+    // -- Water plane --
+    {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glm::mat4 model(1.0f);
+        glm::mat3 nm = normalMat3(model);
+        glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+        glUniform1f(mu.enableSwirl, 0.0f);
+        glUniform3f(mu.tint, 1.0f, 1.0f, 1.0f);
+        glUniform1f(mu.opacity, 0.65f);
+        glUniform1i(mu.objType, 6);  // water type
+        glUniform1i(mu.hasAlbedo, 0);
+        glBindVertexArray(s.waterVAO);
+        glDrawElements(GL_TRIANGLES, s.waterIndexCount, GL_UNSIGNED_INT, nullptr);
+        glDisable(GL_BLEND);
     }
 
     // -- Houses --
@@ -1342,19 +1460,20 @@ static void main_loop() {
     }
 
     // -- Scorch marks on ground --
-    if (!s.scorchMarks.empty()) {
+    if (!s.scorchMarks.empty() && s.scorchVAO) {
         glUniform1i(mu.objType, 3);
         glUniform1i(mu.hasAlbedo, 0);
         glUniform1f(mu.enableSwirl, 0.0f);
         for (const auto& sm : s.scorchMarks) {
-            glm::mat4 model = glm::translate(glm::mat4(1.0f), sm.pos);
+            float sy = getTerrainHeight(sm.pos.x, sm.pos.z) + 0.02f;
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(sm.pos.x, sy, sm.pos.z));
             model = glm::scale(model, glm::vec3(sm.radius, 1.0f, sm.radius));
             glm::mat3 nm = normalMat3(model);
             glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
             glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
             glUniform3f(mu.tint, 0.3f, 0.3f, 0.25f); // dark scorch
             glUniform1f(mu.opacity, 0.7f);
-            glBindVertexArray(s.groundVAO);
+            glBindVertexArray(s.scorchVAO);
             glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
         }
         glUniform1f(mu.opacity, 1.0f);
@@ -1400,8 +1519,9 @@ static void main_loop() {
 
     // -- Tornado mesh (swirl enabled, semi-transparent) --
     {
+        float tornadoTerrainY = getTerrainHeight(s.tornadoPos.x, s.tornadoPos.y);
         glm::mat4 model = glm::translate(glm::mat4(1.0f),
-                              glm::vec3(s.tornadoPos.x, 0.0f, s.tornadoPos.y));
+                              glm::vec3(s.tornadoPos.x, tornadoTerrainY, s.tornadoPos.y));
         model = glm::scale(model, glm::vec3(s.tornadoScale, s.tornadoScale, s.tornadoScale));
         glm::mat3 nm = normalMat3(model);
         glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
@@ -1969,6 +2089,8 @@ int main() {
         m.lightningFlash = glGetUniformLocation(p, "uLightningFlash");
         m.windBend    = glGetUniformLocation(p, "uWindBend");
         m.windSource  = glGetUniformLocation(p, "uWindSource");
+        m.timeOfDay   = glGetUniformLocation(p, "uTimeOfDay");
+        m.waterLevel  = glGetUniformLocation(p, "uWaterLevel");
     }
     {
         GLuint p = app.particleProgram;
@@ -1984,6 +2106,7 @@ int main() {
         GLuint p = app.skyProgram;
         app.su.lightningFlash = glGetUniformLocation(p, "uLightningFlash");
         app.su.time           = glGetUniformLocation(p, "uTime");
+        app.su.timeOfDay      = glGetUniformLocation(p, "uTimeOfDay");
     }
     // Rain shader uniforms
     {
@@ -2242,17 +2365,62 @@ int main() {
     }
 
     // ══════════════════════════════════════
-    // Ground plane
+    // Terrain heightmap grid
     // ══════════════════════════════════════
     {
         struct SV { glm::vec3 pos; glm::vec3 normal; glm::vec3 col; };
-        std::vector<SV> gv = {
-            {{-500,0,-500},{0,1,0},{0.15f,0.45f,0.2f}},
-            {{ 500,0,-500},{0,1,0},{0.15f,0.45f,0.2f}},
-            {{ 500,0, 500},{0,1,0},{0.15f,0.45f,0.2f}},
-            {{-500,0, 500},{0,1,0},{0.15f,0.45f,0.2f}},
-        };
-        std::vector<unsigned int> gi = {0,1,2, 0,2,3};
+        const int GN = TERRAIN_GRID + 1; // vertices per axis
+        std::vector<SV> gv(GN * GN);
+        float step = (TERRAIN_EXTENT * 2.0f) / TERRAIN_GRID;
+
+        // Generate heights
+        for (int iz = 0; iz < GN; ++iz) {
+            for (int ix = 0; ix < GN; ++ix) {
+                float x = -TERRAIN_EXTENT + ix * step;
+                float z = -TERRAIN_EXTENT + iz * step;
+                float y = getTerrainHeight(x, z);
+                // Color based on height
+                glm::vec3 col;
+                if (y < WATER_LEVEL + 0.05f) {
+                    col = glm::vec3(0.55f, 0.50f, 0.38f); // sand/beach
+                } else if (y < 2.0f) {
+                    col = glm::vec3(0.15f, 0.45f, 0.2f);  // grass
+                } else if (y < 4.0f) {
+                    float t2 = (y - 2.0f) / 2.0f;
+                    col = glm::mix(glm::vec3(0.15f,0.45f,0.2f), glm::vec3(0.4f,0.35f,0.28f), t2); // grass→rock
+                } else {
+                    float t2 = glm::clamp((y - 4.0f) / 2.0f, 0.0f, 1.0f);
+                    col = glm::mix(glm::vec3(0.4f,0.35f,0.28f), glm::vec3(0.85f,0.85f,0.9f), t2); // rock→snow
+                }
+                gv[iz * GN + ix] = {glm::vec3(x, y, z), glm::vec3(0,1,0), col};
+            }
+        }
+        // Compute normals from adjacent heights
+        for (int iz = 0; iz < GN; ++iz) {
+            for (int ix = 0; ix < GN; ++ix) {
+                float hL = (ix > 0)    ? gv[iz*GN + ix-1].pos.y : gv[iz*GN+ix].pos.y;
+                float hR = (ix < GN-1) ? gv[iz*GN + ix+1].pos.y : gv[iz*GN+ix].pos.y;
+                float hD = (iz > 0)    ? gv[(iz-1)*GN + ix].pos.y : gv[iz*GN+ix].pos.y;
+                float hU = (iz < GN-1) ? gv[(iz+1)*GN + ix].pos.y : gv[iz*GN+ix].pos.y;
+                glm::vec3 n = glm::normalize(glm::vec3(hL - hR, 2.0f * step, hD - hU));
+                gv[iz * GN + ix].normal = n;
+            }
+        }
+        // Generate indices
+        std::vector<unsigned int> gi;
+        gi.reserve(TERRAIN_GRID * TERRAIN_GRID * 6);
+        for (int iz = 0; iz < TERRAIN_GRID; ++iz) {
+            for (int ix = 0; ix < TERRAIN_GRID; ++ix) {
+                unsigned int i0 = iz * GN + ix;
+                unsigned int i1 = iz * GN + ix + 1;
+                unsigned int i2 = (iz+1) * GN + ix;
+                unsigned int i3 = (iz+1) * GN + ix + 1;
+                gi.push_back(i0); gi.push_back(i1); gi.push_back(i2);
+                gi.push_back(i2); gi.push_back(i1); gi.push_back(i3);
+            }
+        }
+        app.terrainIndexCount = (GLsizei)gi.size();
+
         glGenVertexArrays(1, &app.groundVAO);
         glGenBuffers(1, &app.groundVBO);
         glGenBuffers(1, &app.groundEBO);
@@ -2261,6 +2429,84 @@ int main() {
         glBufferData(GL_ARRAY_BUFFER, gv.size()*sizeof(SV), gv.data(), GL_STATIC_DRAW);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app.groundEBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, gi.size()*sizeof(unsigned int), gi.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(SV),(void*)offsetof(SV,pos));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(SV),(void*)offsetof(SV,normal));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2,3,GL_FLOAT,GL_FALSE,sizeof(SV),(void*)offsetof(SV,col));
+        glBindVertexArray(0);
+    }
+
+    // ══════════════════════════════════════
+    // Water plane
+    // ══════════════════════════════════════
+    {
+        struct SV { glm::vec3 pos; glm::vec3 normal; glm::vec3 col; };
+        const int WN = 33; // water grid resolution
+        const float WE = TERRAIN_EXTENT;
+        float wstep = (WE * 2.0f) / (WN - 1);
+        std::vector<SV> wv(WN * WN);
+        for (int iz = 0; iz < WN; ++iz) {
+            for (int ix = 0; ix < WN; ++ix) {
+                float x = -WE + ix * wstep;
+                float z = -WE + iz * wstep;
+                wv[iz * WN + ix] = {glm::vec3(x, WATER_LEVEL, z),
+                                     glm::vec3(0, 1, 0),
+                                     glm::vec3(0.15f, 0.35f, 0.55f)};
+            }
+        }
+        std::vector<unsigned int> wi;
+        wi.reserve((WN-1) * (WN-1) * 6);
+        for (int iz = 0; iz < WN-1; ++iz) {
+            for (int ix = 0; ix < WN-1; ++ix) {
+                unsigned int i0 = iz * WN + ix;
+                unsigned int i1 = iz * WN + ix + 1;
+                unsigned int i2 = (iz+1) * WN + ix;
+                unsigned int i3 = (iz+1) * WN + ix + 1;
+                wi.push_back(i0); wi.push_back(i1); wi.push_back(i2);
+                wi.push_back(i2); wi.push_back(i1); wi.push_back(i3);
+            }
+        }
+        app.waterIndexCount = (GLsizei)wi.size();
+
+        glGenVertexArrays(1, &app.waterVAO);
+        glGenBuffers(1, &app.waterVBO);
+        glGenBuffers(1, &app.waterEBO);
+        glBindVertexArray(app.waterVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, app.waterVBO);
+        glBufferData(GL_ARRAY_BUFFER, wv.size()*sizeof(SV), wv.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app.waterEBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, wi.size()*sizeof(unsigned int), wi.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(SV),(void*)offsetof(SV,pos));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(SV),(void*)offsetof(SV,normal));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2,3,GL_FLOAT,GL_FALSE,sizeof(SV),(void*)offsetof(SV,col));
+        glBindVertexArray(0);
+    }
+
+    // ══════════════════════════════════════
+    // Scorch mark quad (simple flat square)
+    // ══════════════════════════════════════
+    {
+        struct SV { glm::vec3 pos; glm::vec3 normal; glm::vec3 col; };
+        std::vector<SV> sv = {
+            {{-1,0,-1},{0,1,0},{0.15f,0.45f,0.2f}},
+            {{ 1,0,-1},{0,1,0},{0.15f,0.45f,0.2f}},
+            {{ 1,0, 1},{0,1,0},{0.15f,0.45f,0.2f}},
+            {{-1,0, 1},{0,1,0},{0.15f,0.45f,0.2f}},
+        };
+        std::vector<unsigned int> si = {0,1,2, 0,2,3};
+        glGenVertexArrays(1, &app.scorchVAO);
+        glGenBuffers(1, &app.scorchVBO);
+        glGenBuffers(1, &app.scorchEBO);
+        glBindVertexArray(app.scorchVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, app.scorchVBO);
+        glBufferData(GL_ARRAY_BUFFER, sv.size()*sizeof(SV), sv.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app.scorchEBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, si.size()*sizeof(unsigned int), si.data(), GL_STATIC_DRAW);
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(SV),(void*)offsetof(SV,pos));
         glEnableVertexAttribArray(1);
@@ -2549,6 +2795,12 @@ int main() {
     glDeleteBuffers(1, &app.groundVBO);
     glDeleteBuffers(1, &app.groundEBO);
     glDeleteVertexArrays(1, &app.groundVAO);
+    glDeleteBuffers(1, &app.waterVBO);
+    glDeleteBuffers(1, &app.waterEBO);
+    glDeleteVertexArrays(1, &app.waterVAO);
+    glDeleteBuffers(1, &app.scorchVBO);
+    glDeleteBuffers(1, &app.scorchEBO);
+    glDeleteVertexArrays(1, &app.scorchVAO);
     if (app.house.vao) { glDeleteBuffers(1,&app.house.vbo); glDeleteBuffers(1,&app.house.ebo); glDeleteVertexArrays(1,&app.house.vao); }
     if (app.tree.vao)  { glDeleteBuffers(1,&app.tree.vbo);  glDeleteBuffers(1,&app.tree.ebo);  glDeleteVertexArrays(1,&app.tree.vao);  }
     if (app.debrisCube.vao) { glDeleteBuffers(1,&app.debrisCube.vbo); glDeleteBuffers(1,&app.debrisCube.ebo); glDeleteVertexArrays(1,&app.debrisCube.vao); }

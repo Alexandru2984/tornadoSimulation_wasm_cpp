@@ -18,17 +18,25 @@ uniform float uEnableSwirl;
 uniform mat3 uNormalMat;
 uniform float uWindBend;
 uniform vec3 uWindSource;
+uniform int uObjType;
 
 void main() {
     float height = aPos.y;
     vec3 p = aPos;
+
+    // Water wave vertex displacement
+    if (uObjType == 6) {
+        float wave1 = sin(p.x * 0.5 + uTime * 1.5) * 0.06;
+        float wave2 = sin(p.z * 0.7 + uTime * 1.1) * 0.04;
+        float wave3 = sin((p.x + p.z) * 0.3 + uTime * 0.8) * 0.03;
+        p.y += wave1 + wave2 + wave3;
+    }
+
     if (uEnableSwirl > 0.5) {
-        // swirling offset depends on height and time, stronger near middle
         float swirlAmt = 0.25 * (1.0 - height / 6.0);
         float angOff = uTime * 2.0 + height * 3.0;
         p.x = aPos.x * cos(angOff) - aPos.z * sin(angOff);
         p.z = aPos.x * sin(angOff) + aPos.z * cos(angOff);
-        // small radial pulsation
         float pulse = 1.0 + 0.05 * sin(uTime * 6.0 + height * 8.0);
         p.x *= pulse;
         p.z *= pulse;
