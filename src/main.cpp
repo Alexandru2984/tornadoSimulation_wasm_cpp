@@ -22,7 +22,6 @@
 #include <sstream>
 #include <vector>
 #include <cmath>
-#include <map>
 #include <random>
 #include <chrono>
 #include <string>
@@ -45,8 +44,32 @@
 #include "gltf_loader.h"
 
 // ── Constants ────────────────────────────────────────────────────────
-static const int MAX_PARTICLES   = 2200;
-static const int INNER_PARTICLES = 1400;
+static const int   MAX_PARTICLES   = 2200;
+static const int   INNER_PARTICLES = 1400;
+
+// Tornado mesh
+static const int   TORNADO_SEGMENTS = 64;
+static const int   TORNADO_RINGS    = 40;
+static const float TORNADO_HEIGHT   = 6.0f;
+static const float TORNADO_BASE_R   = 1.5f;
+
+// Vortex physics
+static const float VORTEX_INNER    = 4.0f;
+static const float VORTEX_OUTER    = 2.0f;
+static const float UPLIFT_INNER    = 2.5f;
+static const float UPLIFT_OUTER    = 1.0f;
+static const float PULL_INNER      = 1.5f;
+static const float PULL_OUTER      = 0.5f;
+static const float VEL_DAMPING     = 2.0f;
+
+// Uniform location caches
+struct MainUniforms {
+    GLint proj=-1, view=-1, model=-1, normalMat=-1, time=-1, camPos=-1;
+    GLint enableSwirl=-1, tint=-1, opacity=-1, objType=-1, hasAlbedo=-1, albedo=-1;
+};
+struct ParticleUniforms {
+    GLint proj=-1, view=-1, model=-1, color=-1, pointScale=-1;
+};
 
 // ── Structs ──────────────────────────────────────────────────────────
 struct Camera {
@@ -95,13 +118,18 @@ struct AppState {
     GLTFModel   avocadoModel;  bool avoLoaded = false;
 
     // Textures
-    GLuint brickTex = 0, woodTex = 0, leafTex = 0;
+    GLuint brickTex = 0, leafTex = 0;
+
+    // Uniform location caches
+    MainUniforms mu;
+    ParticleUniforms pu;
 
     // Particles
     GLuint particleVAO = 0, particleVBO = 0;
     std::vector<Particle> particles;
     std::mt19937 rng;
     std::uniform_real_distribution<float> rnd01{0.0f, 1.0f};
+    std::vector<float> particleBuf; // persistent upload buffer
 
     // Timing / FPS
     double lastT     = 0.0;
@@ -196,70 +224,6 @@ static GLuint linkProgram(GLuint v, GLuint f) {
     return p;
 }
 
-// ── OBJ loader (kept for future use) ─────────────────────────────────
-SimpleModel loadSimpleOBJ(const std::string &path) {
-    std::ifstream in(path);
-    SimpleModel m;
-    if (!in) return m;
-    std::vector<glm::vec3> positions;
-    std::vector<glm::vec3> normals;
-    struct Vert { glm::vec3 p; glm::vec3 n; };
-    std::vector<Vert> verts;
-    std::vector<unsigned int> indices;
-    std::map<std::string, unsigned int> cache;
-    std::string line;
-    while (std::getline(in, line)) {
-        if (line.size() < 2) continue;
-        std::istringstream ss(line);
-        std::string tag; ss >> tag;
-        if (tag == "v")  { float x,y,z; ss>>x>>y>>z; positions.push_back({x,y,z}); }
-        else if (tag == "vn") { float x,y,z; ss>>x>>y>>z; normals.push_back({x,y,z}); }
-        else if (tag == "f") {
-            std::string a,b,c; ss>>a>>b>>c;
-            std::string arr[3]={a,b,c};
-            for (int i=0;i<3;++i) {
-                auto it = cache.find(arr[i]);
-                if (it != cache.end()) { indices.push_back(it->second); continue; }
-                std::string s = arr[i];
-                int vIdx=0, nIdx=0;
-                size_t p1 = s.find('/');
-                if (p1==std::string::npos) { vIdx = std::stoi(s); }
-                else {
-                    vIdx = std::stoi(s.substr(0, p1));
-                    size_t p2 = s.find('/', p1+1);
-                    if (p2!=std::string::npos) {
-                        std::string sn = s.substr(p2+1);
-                        if (!sn.empty()) nIdx = std::stoi(sn);
-                    }
-                }
-                glm::vec3 pp = positions[vIdx-1];
-                glm::vec3 nn = nIdx>0 ? normals[nIdx-1] : glm::vec3(0,1,0);
-                verts.push_back({pp,nn});
-                unsigned int id = (unsigned int)verts.size()-1;
-                cache[arr[i]] = id;
-                indices.push_back(id);
-            }
-        }
-    }
-    glGenVertexArrays(1, &m.vao);
-    glGenBuffers(1, &m.vbo);
-    glGenBuffers(1, &m.ebo);
-    glBindVertexArray(m.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
-    glBufferData(GL_ARRAY_BUFFER, verts.size()*sizeof(Vert), verts.data(), GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size()*sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(Vert),(void*)offsetof(Vert,p));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(Vert),(void*)offsetof(Vert,n));
-    glEnableVertexAttribArray(2);
-    glVertexAttrib3f(2, 0.85f, 0.85f, 0.85f);
-    glBindVertexArray(0);
-    m.indexCount = (GLsizei)indices.size();
-    return m;
-}
-
 // ── Particle respawn ─────────────────────────────────────────────────
 static void respawnParticle(Particle& p, bool inner) {
     auto& rng   = app.rng;
@@ -349,51 +313,45 @@ static void main_loop() {
     glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 200.0f);
     glm::mat4 view = s.camera.getView();
 
-    // -- Helper lambdas for uniform setting --
-    auto setMat4 = [](GLuint prog, const char* name, const glm::mat4& m) {
-        glUniformMatrix4fv(glGetUniformLocation(prog, name), 1, GL_FALSE, glm::value_ptr(m));
-    };
-    auto setVec3 = [](GLuint prog, const char* name, const glm::vec3& v) {
-        glUniform3fv(glGetUniformLocation(prog, name), 1, glm::value_ptr(v));
-    };
-    auto setFloat = [](GLuint prog, const char* name, float v) {
-        glUniform1f(glGetUniformLocation(prog, name), v);
-    };
-    auto setInt = [](GLuint prog, const char* name, int v) {
-        glUniform1i(glGetUniformLocation(prog, name), v);
+    // -- Helper: compute normal matrix from model matrix --
+    auto normalMat3 = [](const glm::mat4& model) -> glm::mat3 {
+        return glm::mat3(glm::transpose(glm::inverse(model)));
     };
 
     // ════════════════════════════════
     // MAIN SHADER — scene + tornado
     // ════════════════════════════════
     glUseProgram(s.program);
-    setMat4 (s.program, "uProj",  proj);
-    setMat4 (s.program, "uView",  view);
-    setFloat(s.program, "uTime",  t);
-    setVec3 (s.program, "uCamPos", s.camera.pos);
+    auto& mu = s.mu;
+    glUniformMatrix4fv(mu.proj, 1, GL_FALSE, glm::value_ptr(proj));
+    glUniformMatrix4fv(mu.view, 1, GL_FALSE, glm::value_ptr(view));
+    glUniform1f(mu.time, t);
+    glUniform3fv(mu.camPos, 1, glm::value_ptr(s.camera.pos));
 
     // -- Ground --
     {
         glm::mat4 model(1.0f);
-        setMat4 (s.program, "uModel",       model);
-        setFloat(s.program, "uEnableSwirl", 0.0f);
-        setVec3 (s.program, "uTint", glm::vec3(1.0f));
-        setFloat(s.program, "uOpacity",     1.0f);
-        setInt  (s.program, "uObjType",     3);
-        setInt  (s.program, "uHasAlbedo",   0);
+        glm::mat3 nm = normalMat3(model);
+        glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+        glUniform1f(mu.enableSwirl, 0.0f);
+        glUniform3f(mu.tint, 1.0f, 1.0f, 1.0f);
+        glUniform1f(mu.opacity, 1.0f);
+        glUniform1i(mu.objType, 3);
+        glUniform1i(mu.hasAlbedo, 0);
         glBindVertexArray(s.groundVAO);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
     }
 
     // -- Houses --
     {
-        setInt  (s.program, "uObjType",     1);
-        setFloat(s.program, "uEnableSwirl", 0.0f);
-        setFloat(s.program, "uOpacity",     1.0f);
-        setInt  (s.program, "uHasAlbedo",   1);
+        glUniform1i(mu.objType, 1);
+        glUniform1f(mu.enableSwirl, 0.0f);
+        glUniform1f(mu.opacity, 1.0f);
+        glUniform1i(mu.hasAlbedo, 1);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, s.brickTex);
-        setInt(s.program, "uAlbedo", 0);
+        glUniform1i(mu.albedo, 0);
 
         static const glm::vec3 housePos[] = {
             {-5,0,-3}, {4,0,-6}, {-7,0,5}, {6,0,4}
@@ -401,8 +359,10 @@ static void main_loop() {
         for (const auto& hp : housePos) {
             glm::mat4 model = glm::scale(
                 glm::translate(glm::mat4(1.0f), hp), glm::vec3(1.5f));
-            setMat4(s.program, "uModel", model);
-            setVec3(s.program, "uTint", glm::vec3(1.0f, 0.95f, 0.9f));
+            glm::mat3 nm = normalMat3(model);
+            glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+            glUniform3f(mu.tint, 1.0f, 0.95f, 0.9f);
             glBindVertexArray(s.house.vao);
             glDrawElements(GL_TRIANGLES, s.house.indexCount, GL_UNSIGNED_INT, nullptr);
         }
@@ -410,8 +370,8 @@ static void main_loop() {
 
     // -- Trees --
     {
-        setInt (s.program, "uObjType",   2);
-        setInt (s.program, "uHasAlbedo", 1);
+        glUniform1i(mu.objType, 2);
+        glUniform1i(mu.hasAlbedo, 1);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, s.leafTex);
 
@@ -421,8 +381,10 @@ static void main_loop() {
         for (const auto& tp : treePos) {
             glm::mat4 model = glm::scale(
                 glm::translate(glm::mat4(1.0f), tp), glm::vec3(2.0f));
-            setMat4(s.program, "uModel", model);
-            setVec3(s.program, "uTint", glm::vec3(1.0f));
+            glm::mat3 nm = normalMat3(model);
+            glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+            glUniform3f(mu.tint, 1.0f, 1.0f, 1.0f);
             glBindVertexArray(s.tree.vao);
             glDrawElements(GL_TRIANGLES, s.tree.indexCount, GL_UNSIGNED_INT, nullptr);
         }
@@ -430,25 +392,27 @@ static void main_loop() {
 
     // -- glTF models (if loaded) --
     if (s.boxLoaded) {
-        setInt  (s.program, "uObjType",     0);
-        setFloat(s.program, "uEnableSwirl", 0.0f);
-        setFloat(s.program, "uOpacity",     1.0f);
-        setInt  (s.program, "uHasAlbedo", s.boxModel.texture ? 1 : 0);
+        glUniform1i(mu.objType, 0);
+        glUniform1f(mu.enableSwirl, 0.0f);
+        glUniform1f(mu.opacity, 1.0f);
+        glUniform1i(mu.hasAlbedo, s.boxModel.texture ? 1 : 0);
         if (s.boxModel.texture) {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, s.boxModel.texture);
         }
         glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 0.5f, 2.0f));
-        setMat4(s.program, "uModel", model);
-        setVec3(s.program, "uTint", glm::vec3(1.0f));
+        glm::mat3 nm = normalMat3(model);
+        glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+        glUniform3f(mu.tint, 1.0f, 1.0f, 1.0f);
         glBindVertexArray(s.boxModel.vao);
         glDrawElements(GL_TRIANGLES, s.boxModel.indexCount, GL_UNSIGNED_INT, nullptr);
     }
     if (s.avoLoaded) {
-        setInt  (s.program, "uObjType",     0);
-        setFloat(s.program, "uEnableSwirl", 0.0f);
-        setFloat(s.program, "uOpacity",     1.0f);
-        setInt  (s.program, "uHasAlbedo", s.avocadoModel.texture ? 1 : 0);
+        glUniform1i(mu.objType, 0);
+        glUniform1f(mu.enableSwirl, 0.0f);
+        glUniform1f(mu.opacity, 1.0f);
+        glUniform1i(mu.hasAlbedo, s.avocadoModel.texture ? 1 : 0);
         if (s.avocadoModel.texture) {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, s.avocadoModel.texture);
@@ -456,8 +420,10 @@ static void main_loop() {
         glm::mat4 model = glm::scale(
             glm::translate(glm::mat4(1.0f), glm::vec3(-3.0f, 0.5f, 3.0f)),
             glm::vec3(30.0f));
-        setMat4(s.program, "uModel", model);
-        setVec3(s.program, "uTint", glm::vec3(1.0f));
+        glm::mat3 nm = normalMat3(model);
+        glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+        glUniform3f(mu.tint, 1.0f, 1.0f, 1.0f);
         glBindVertexArray(s.avocadoModel.vao);
         glDrawElements(GL_TRIANGLES, s.avocadoModel.indexCount, GL_UNSIGNED_INT, nullptr);
     }
@@ -466,12 +432,14 @@ static void main_loop() {
     {
         glm::mat4 model = glm::translate(glm::mat4(1.0f),
                               glm::vec3(s.tornadoPos.x, 0.0f, s.tornadoPos.y));
-        setMat4 (s.program, "uModel",       model);
-        setFloat(s.program, "uEnableSwirl", 1.0f);
-        setVec3 (s.program, "uTint", glm::vec3(0.8f, 0.8f, 0.9f));
-        setFloat(s.program, "uOpacity",     0.7f);
-        setInt  (s.program, "uObjType",     0);
-        setInt  (s.program, "uHasAlbedo",   0);
+        glm::mat3 nm = normalMat3(model);
+        glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+        glUniform1f(mu.enableSwirl, 1.0f);
+        glUniform3f(mu.tint, 0.8f, 0.8f, 0.9f);
+        glUniform1f(mu.opacity, 0.7f);
+        glUniform1i(mu.objType, 0);
+        glUniform1i(mu.hasAlbedo, 0);
         glBindVertexArray(s.tornadoVAO);
         glDrawElements(GL_TRIANGLES, s.tornadoIndexCount, GL_UNSIGNED_INT, nullptr);
     }
@@ -488,15 +456,15 @@ static void main_loop() {
         glm::vec3 tangent = glm::vec3(-toCenter.z, 0.0f, toCenter.x);
         if (dist > 0.01f) tangent /= dist;
 
-        float vortex = inner ? 4.0f : 2.0f;
-        float up     = inner ? 2.5f : 1.0f;
-        float pull   = inner ? 1.5f : 0.5f;
+        float vortex = inner ? VORTEX_INNER : VORTEX_OUTER;
+        float up     = inner ? UPLIFT_INNER : UPLIFT_OUTER;
+        float pull   = inner ? PULL_INNER   : PULL_OUTER;
 
         p.vel += tangent * vortex * dt;
         p.vel.y += up * dt;
         if (dist > 0.1f)
             p.vel += glm::normalize(glm::vec3(toCenter.x, 0, toCenter.z)) * pull * dt;
-        p.vel *= (1.0f - 2.0f * dt);
+        p.vel *= (1.0f - VEL_DAMPING * dt);
         p.pos += p.vel * dt;
         p.life -= dt;
 
@@ -507,25 +475,25 @@ static void main_loop() {
         }
     }
 
-    // Upload to GPU (vec3 pos + float life per particle)
+    // Upload to GPU (vec3 pos + float life per particle) — persistent buffer
     {
-        std::vector<float> buf(MAX_PARTICLES * 4);
         for (int i = 0; i < MAX_PARTICLES; ++i) {
-            buf[i*4+0] = s.particles[i].pos.x;
-            buf[i*4+1] = s.particles[i].pos.y;
-            buf[i*4+2] = s.particles[i].pos.z;
-            buf[i*4+3] = s.particles[i].life;
+            s.particleBuf[i*4+0] = s.particles[i].pos.x;
+            s.particleBuf[i*4+1] = s.particles[i].pos.y;
+            s.particleBuf[i*4+2] = s.particles[i].pos.z;
+            s.particleBuf[i*4+3] = s.particles[i].life;
         }
         glBindBuffer(GL_ARRAY_BUFFER, s.particleVBO);
         glBufferSubData(GL_ARRAY_BUFFER, 0,
-                        buf.size() * sizeof(float), buf.data());
+                        s.particleBuf.size() * sizeof(float), s.particleBuf.data());
     }
 
     // Draw particles
     glUseProgram(s.particleProgram);
-    setMat4(s.particleProgram, "uProj", proj);
-    setMat4(s.particleProgram, "uView", view);
-    setMat4(s.particleProgram, "uModel", glm::mat4(1.0f));
+    auto& pu = s.pu;
+    glUniformMatrix4fv(pu.proj, 1, GL_FALSE, glm::value_ptr(proj));
+    glUniformMatrix4fv(pu.view, 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(pu.model, 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0f)));
 
 #ifndef PLATFORM_EMSCRIPTEN
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -534,13 +502,13 @@ static void main_loop() {
     glBindVertexArray(s.particleVAO);
 
     // inner (dense dark dust)
-    setVec3 (s.particleProgram, "uColor", glm::vec3(0.25f, 0.22f, 0.2f));
-    setFloat(s.particleProgram, "uPointScale", 1.5f);
+    glUniform3f(pu.color, 0.25f, 0.22f, 0.2f);
+    glUniform1f(pu.pointScale, 1.5f);
     glDrawArrays(GL_POINTS, 0, INNER_PARTICLES);
 
     // outer (lighter debris)
-    setVec3 (s.particleProgram, "uColor", glm::vec3(0.5f, 0.45f, 0.35f));
-    setFloat(s.particleProgram, "uPointScale", 2.0f);
+    glUniform3f(pu.color, 0.5f, 0.45f, 0.35f);
+    glUniform1f(pu.pointScale, 2.0f);
     glDrawArrays(GL_POINTS, INNER_PARTICLES, MAX_PARTICLES - INNER_PARTICLES);
 
     glBindVertexArray(0);
@@ -631,6 +599,33 @@ int main() {
     glDeleteShader(pvsi); glDeleteShader(pfsi);
     if (!app.particleProgram) { std::cerr << "Particle shader program failed.\n"; return -1; }
 
+    // ── Cache uniform locations ──
+    {
+        GLuint p = app.program;
+        auto& m = app.mu;
+        m.proj        = glGetUniformLocation(p, "uProj");
+        m.view        = glGetUniformLocation(p, "uView");
+        m.model       = glGetUniformLocation(p, "uModel");
+        m.normalMat   = glGetUniformLocation(p, "uNormalMat");
+        m.time        = glGetUniformLocation(p, "uTime");
+        m.camPos      = glGetUniformLocation(p, "uCamPos");
+        m.enableSwirl = glGetUniformLocation(p, "uEnableSwirl");
+        m.tint        = glGetUniformLocation(p, "uTint");
+        m.opacity     = glGetUniformLocation(p, "uOpacity");
+        m.objType     = glGetUniformLocation(p, "uObjType");
+        m.hasAlbedo   = glGetUniformLocation(p, "uHasAlbedo");
+        m.albedo      = glGetUniformLocation(p, "uAlbedo");
+    }
+    {
+        GLuint p = app.particleProgram;
+        auto& u = app.pu;
+        u.proj       = glGetUniformLocation(p, "uProj");
+        u.view       = glGetUniformLocation(p, "uView");
+        u.model      = glGetUniformLocation(p, "uModel");
+        u.color      = glGetUniformLocation(p, "uColor");
+        u.pointScale = glGetUniformLocation(p, "uPointScale");
+    }
+
     // ══════════════════════════════════════
     // Procedural textures
     // ══════════════════════════════════════
@@ -647,26 +642,6 @@ int main() {
         }
         glGenTextures(1, &app.brickTex);
         glBindTexture(GL_TEXTURE_2D, app.brickTex);
-        glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,CX,CY,0,GL_RGB,GL_UNSIGNED_BYTE,px.data());
-        glGenerateMipmap(GL_TEXTURE_2D);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
-    }
-    // Wood
-    {
-        const int CX = 32, CY = 32;
-        std::vector<unsigned char> px(CX*CY*3);
-        for (int y = 0; y < CY; ++y) for (int x = 0; x < CX; ++x) {
-            int i = (y*CX+x)*3;
-            float v = 140.0f + 30.0f * sinf((float)x*0.6f + (y%3));
-            px[i]   = (unsigned char)glm::clamp(v+10.0f, 0.0f, 255.0f);
-            px[i+1] = (unsigned char)glm::clamp(v-20.0f, 0.0f, 255.0f);
-            px[i+2] = (unsigned char)glm::clamp(v-45.0f, 0.0f, 255.0f);
-        }
-        glGenTextures(1, &app.woodTex);
-        glBindTexture(GL_TEXTURE_2D, app.woodTex);
         glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,CX,CY,0,GL_RGB,GL_UNSIGNED_BYTE,px.data());
         glGenerateMipmap(GL_TEXTURE_2D);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR_MIPMAP_LINEAR);
@@ -699,10 +674,10 @@ int main() {
     // Tornado mesh — stacked rings (inverted cone)
     // ══════════════════════════════════════
     {
-        const int segments = 128;
-        const int rings    = 80;
-        const float ht = 6.0f;
-        const float baseR  = 1.5f;
+        const int segments = TORNADO_SEGMENTS;
+        const int rings    = TORNADO_RINGS;
+        const float ht     = TORNADO_HEIGHT;
+        const float baseR  = TORNADO_BASE_R;
 
         std::vector<Vertex> verts;
         std::vector<unsigned int> idx;
@@ -778,26 +753,53 @@ int main() {
     }
 
     // ══════════════════════════════════════
-    // Procedural house
+    // Procedural house (per-face normals)
     // ══════════════════════════════════════
     {
         struct PV { glm::vec3 p; glm::vec3 n; glm::vec2 uv; };
         std::vector<PV> hv;
         std::vector<unsigned int> hi;
         float hw=0.6f, hh=1.0f, hd=0.6f;
-        std::vector<glm::vec3> pos = {
+
+        // Helper: add a quad with correct face normal and UVs
+        auto addQuad = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d,
+                           glm::vec3 n) {
+            unsigned int base = (unsigned int)hv.size();
+            hv.push_back({a, n, {0,0}});
+            hv.push_back({b, n, {1,0}});
+            hv.push_back({c, n, {1,1}});
+            hv.push_back({d, n, {0,1}});
+            hi.push_back(base); hi.push_back(base+1); hi.push_back(base+2);
+            hi.push_back(base); hi.push_back(base+2); hi.push_back(base+3);
+        };
+
+        // Box corners: bottom 0-3, top 4-7
+        glm::vec3 v[8] = {
             {-hw,0,-hd},{hw,0,-hd},{hw,0,hd},{-hw,0,hd},
-            {-hw,hh,-hd},{hw,hh,-hd},{hw,hh,hd},{-hw,hh,hd}};
-        for (auto &p: pos)
-            hv.push_back({p, {0,1,0}, {(p.x+hw)/(2.f*hw), p.y/(hh+0.6f)}});
-        unsigned int ci[] = {0,1,2,0,2,3, 4,5,6,4,6,7, 0,1,5,0,5,4,
-                             1,2,6,1,6,5, 2,3,7,2,7,6, 3,0,4,3,4,7};
-        hi.insert(hi.end(), std::begin(ci), std::end(ci));
+            {-hw,hh,-hd},{hw,hh,-hd},{hw,hh,hd},{-hw,hh,hd}
+        };
+
+        addQuad(v[3],v[2],v[1],v[0], {0,-1,0}); // bottom
+        addQuad(v[4],v[5],v[6],v[7], {0, 1,0}); // top
+        addQuad(v[0],v[1],v[5],v[4], {0, 0,-1}); // front (-z)
+        addQuad(v[1],v[2],v[6],v[5], {1, 0, 0}); // right (+x)
+        addQuad(v[2],v[3],v[7],v[6], {0, 0, 1}); // back  (+z)
+        addQuad(v[3],v[0],v[4],v[7], {-1,0, 0}); // left  (-x)
+
+        // Roof pyramid
         glm::vec3 apex(0, hh+0.6f, 0);
-        hv.push_back({apex, {0,1,0}, {0.5f,1.0f}});
-        unsigned int ai = (unsigned int)hv.size()-1;
-        unsigned int ri[] = {4,ai,5, 5,ai,6, 6,ai,7, 7,ai,4};
-        hi.insert(hi.end(), std::begin(ri), std::end(ri));
+        auto addTri = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c) {
+            glm::vec3 n = glm::normalize(glm::cross(b-a, c-a));
+            unsigned int base = (unsigned int)hv.size();
+            hv.push_back({a, n, {0,0}});
+            hv.push_back({b, n, {1,0}});
+            hv.push_back({c, n, {0.5f,1}});
+            hi.push_back(base); hi.push_back(base+1); hi.push_back(base+2);
+        };
+        addTri(v[4], v[5], apex);
+        addTri(v[5], v[6], apex);
+        addTri(v[6], v[7], apex);
+        addTri(v[7], v[4], apex);
 
         glGenVertexArrays(1, &app.house.vao);
         glGenBuffers(1, &app.house.vbo);
@@ -820,40 +822,60 @@ int main() {
     }
 
     // ══════════════════════════════════════
-    // Procedural tree (trunk + layered cones)
+    // Procedural tree (trunk with per-face normals + foliage cones)
     // ══════════════════════════════════════
     {
         struct PV { glm::vec3 p; glm::vec3 n; glm::vec2 uv; };
         std::vector<PV> tv;
         std::vector<unsigned int> ti;
         float tw=0.15f, th=0.5f;
-        std::vector<glm::vec3> tpos = {
+
+        // Helper: add a quad with correct face normal
+        auto addQuad = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d,
+                           glm::vec3 n) {
+            unsigned int base = (unsigned int)tv.size();
+            tv.push_back({a, n, {0,0}});
+            tv.push_back({b, n, {1,0}});
+            tv.push_back({c, n, {1,1}});
+            tv.push_back({d, n, {0,1}});
+            ti.push_back(base); ti.push_back(base+1); ti.push_back(base+2);
+            ti.push_back(base); ti.push_back(base+2); ti.push_back(base+3);
+        };
+
+        // Trunk box corners
+        glm::vec3 v[8] = {
             {-tw,0,-tw},{tw,0,-tw},{tw,0,tw},{-tw,0,tw},
-            {-tw,th,-tw},{tw,th,-tw},{tw,th,tw},{-tw,th,tw}};
-        for (auto &p: tpos)
-            tv.push_back({p, {0,1,0}, {(p.x+tw)/(2.f*tw), p.y/(th+0.4f)}});
-        unsigned int ti2[] = {0,1,2,0,2,3, 4,5,6,4,6,7, 0,1,5,0,5,4,
-                              1,2,6,1,6,5, 2,3,7,2,7,6, 3,0,4,3,4,7};
-        ti.insert(ti.end(), std::begin(ti2), std::end(ti2));
+            {-tw,th,-tw},{tw,th,-tw},{tw,th,tw},{-tw,th,tw}
+        };
+
+        addQuad(v[3],v[2],v[1],v[0], {0,-1,0}); // bottom
+        addQuad(v[4],v[5],v[6],v[7], {0, 1,0}); // top
+        addQuad(v[0],v[1],v[5],v[4], {0, 0,-1});
+        addQuad(v[1],v[2],v[6],v[5], {1, 0, 0});
+        addQuad(v[2],v[3],v[7],v[6], {0, 0, 1});
+        addQuad(v[3],v[0],v[4],v[7], {-1,0, 0});
+
+        // Foliage: layered cones with computed normals
         int seg = 6;
         for (int layer = 0; layer < 3; ++layer) {
             float baseY  = th + layer*0.25f + 0.1f;
             float radius = 0.6f - layer*0.15f;
-            int start = (int)tv.size();
+            float coneH  = 0.4f;
+            glm::vec3 apex(0, baseY+coneH, 0);
             for (int ss = 0; ss < seg; ++ss) {
-                float a = ss/(float)seg * 2.0f * (float)M_PI;
-                tv.push_back({{cosf(a)*radius, baseY, sinf(a)*radius},
-                              {0,1,0},
-                              {cosf(a)*0.5f+0.5f, baseY/(th+1.2f)}});
-            }
-            tv.push_back({{0, baseY+0.4f, 0}, {0,1,0}, {0.5f,1.0f}});
-            int apex = (int)tv.size()-1;
-            for (int ss = 0; ss < seg; ++ss) {
-                ti.push_back(start+ss);
-                ti.push_back(start+((ss+1)%seg));
-                ti.push_back(apex);
+                float a0 = ss/(float)seg * 2.0f * (float)M_PI;
+                float a1 = ((ss+1)%seg)/(float)seg * 2.0f * (float)M_PI;
+                glm::vec3 p0(cosf(a0)*radius, baseY, sinf(a0)*radius);
+                glm::vec3 p1(cosf(a1)*radius, baseY, sinf(a1)*radius);
+                glm::vec3 n = glm::normalize(glm::cross(p1-p0, apex-p0));
+                unsigned int base = (unsigned int)tv.size();
+                tv.push_back({p0, n, {0,0}});
+                tv.push_back({p1, n, {1,0}});
+                tv.push_back({apex, n, {0.5f,1}});
+                ti.push_back(base); ti.push_back(base+1); ti.push_back(base+2);
             }
         }
+
         glGenVertexArrays(1, &app.tree.vao);
         glGenBuffers(1, &app.tree.vbo);
         glGenBuffers(1, &app.tree.ebo);
@@ -892,6 +914,7 @@ int main() {
     // Particles
     // ══════════════════════════════════════
     app.particles.resize(MAX_PARTICLES);
+    app.particleBuf.resize(MAX_PARTICLES * 4);
     app.rng.seed((unsigned)std::chrono::high_resolution_clock::now().time_since_epoch().count());
     for (int i = 0; i < INNER_PARTICLES; ++i)  respawnParticle(app.particles[i], true);
     for (int i = INNER_PARTICLES; i < MAX_PARTICLES; ++i) respawnParticle(app.particles[i], false);
@@ -936,8 +959,10 @@ int main() {
     glDeleteBuffers(1, &app.particleVBO);
     glDeleteVertexArrays(1, &app.particleVAO);
     glDeleteTextures(1, &app.brickTex);
-    glDeleteTextures(1, &app.woodTex);
     glDeleteTextures(1, &app.leafTex);
+    // glTF models
+    if (app.boxModel.vao)  { glDeleteBuffers(1,&app.boxModel.vbo); glDeleteBuffers(1,&app.boxModel.ebo); glDeleteVertexArrays(1,&app.boxModel.vao); if (app.boxModel.texture) glDeleteTextures(1,&app.boxModel.texture); }
+    if (app.avocadoModel.vao) { glDeleteBuffers(1,&app.avocadoModel.vbo); glDeleteBuffers(1,&app.avocadoModel.ebo); glDeleteVertexArrays(1,&app.avocadoModel.vao); if (app.avocadoModel.texture) glDeleteTextures(1,&app.avocadoModel.texture); }
     glDeleteProgram(app.particleProgram);
     glDeleteProgram(app.program);
     glfwDestroyWindow(window);

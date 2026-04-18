@@ -15,6 +15,7 @@ uniform mat4 uView;
 uniform mat4 uModel;
 uniform float uTime;
 uniform float uEnableSwirl;
+uniform mat3 uNormalMat;
 
 void main() {
     float height = aPos.y;
@@ -33,7 +34,7 @@ void main() {
 
     vec4 worldPos = uModel * vec4(p, 1.0);
     vWorldPos = worldPos.xyz;
-    vNormal = normalize(mat3(transpose(inverse(uModel))) * aNormal);
+    vNormal = normalize(uNormalMat * aNormal);
     vCol = aCol;
     vUV = aUV;
     vHeight = height;

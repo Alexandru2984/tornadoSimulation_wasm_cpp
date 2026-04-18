@@ -23,7 +23,7 @@ struct GLTFModel {
     GLuint texture = 0;
 };
 
-static bool loadSimpleGLTF(const std::string &path, GLTFModel &out) {
+inline bool loadSimpleGLTF(const std::string &path, GLTFModel &out) {
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
     std::string err; std::string warn;
@@ -35,12 +35,17 @@ static bool loadSimpleGLTF(const std::string &path, GLTFModel &out) {
     const tinygltf::Mesh &mesh = model.meshes[0];
     if (mesh.primitives.empty()) return false;
     const tinygltf::Primitive &prim = mesh.primitives[0];
+    // Verify required attributes exist
+    if (prim.attributes.find("POSITION") == prim.attributes.end() ||
+        prim.attributes.find("NORMAL") == prim.attributes.end()) {
+        std::cerr << "gltf: missing POSITION or NORMAL attribute" << std::endl;
+        return false;
+    }
     // positions
     const tinygltf::Accessor &accPos = model.accessors[prim.attributes.at("POSITION")];
     const tinygltf::BufferView &bvPos = model.bufferViews[accPos.bufferView];
     const tinygltf::Buffer &bufPos = model.buffers[bvPos.buffer];
     const unsigned char* posData = bufPos.data.data() + bvPos.byteOffset + accPos.byteOffset;
-    size_t posByteLen = accPos.count * sizeof(float) * 3;
     // normals
     const tinygltf::Accessor &accNorm = model.accessors[prim.attributes.at("NORMAL")];
     const tinygltf::BufferView &bvNorm = model.bufferViews[accNorm.bufferView];

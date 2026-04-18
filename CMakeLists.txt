@@ -5,6 +5,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ── Compiler warnings ─────────────────────────────────────────────────
+add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
+
 # ── Detect Emscripten ─────────────────────────────────────────────────
 if("${CMAKE_SYSTEM_NAME}" STREQUAL "Emscripten")
     set(USING_EMSCRIPTEN TRUE)
