@@ -399,6 +399,15 @@
         }
     </script>
 
+    <!-- Leaderboard modal — must appear before the scripts that reference scores-close -->
+    <div id="scores-modal" class="hidden">
+        <div id="scores-box">
+            <h2>🏆 Top Scoruri</h2>
+            <ul id="scores-list"></ul>
+            <button id="scores-close">Inchide</button>
+        </div>
+    </div>
+
     <script>
         // ── UI control buttons ───────────────────────────────────
         document.getElementById('btn-fullscreen').addEventListener('click', function() {
@@ -475,6 +484,16 @@
             if (e.code === 'KeyR') document.getElementById('btn-restart').click();
         });
 
+        // Resume AudioContext on first user interaction (browsers suspend it before a gesture)
+        function resumeAudioCtx() {
+            if (window._tornadoAudio && window._tornadoAudio.ctx &&
+                    window._tornadoAudio.ctx.state === 'suspended') {
+                window._tornadoAudio.ctx.resume();
+            }
+        }
+        document.getElementById('canvas').addEventListener('click', resumeAudioCtx);
+        document.getElementById('canvas').addEventListener('touchstart', resumeAudioCtx, {passive: true});
+
         Module.setStatus('Se descarca...');
         window.onerror = function(msg, src, line, col, err) {
             Module.setStatus('Eroare: ' + (err ? err.message : msg));
@@ -484,13 +503,5 @@
 
     {{{ SCRIPT }}}
 
-    <!-- Leaderboard modal -->
-    <div id="scores-modal" class="hidden">
-        <div id="scores-box">
-            <h2>🏆 Top Scoruri</h2>
-            <ul id="scores-list"></ul>
-            <button id="scores-close">Inchide</button>
-        </div>
-    </div>
 </body>
 </html>

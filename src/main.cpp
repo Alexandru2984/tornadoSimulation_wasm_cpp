@@ -419,7 +419,7 @@ extern "C" {
         g_paused = (paused != 0);
     }
     EMSCRIPTEN_KEEPALIVE void restart_game() {
-        if (app.gamePhase != GamePhase::VICTORY) return;
+        // Allow restart from any game phase, not just VICTORY
         app.score = Score{};
         app.tornadoScale = 1.0f;
         app.lastDestroyTime = (float)(glfwGetTime() - app.startTime);
@@ -501,6 +501,7 @@ static GLuint compileShader(GLenum type, const char* src) {
 }
 
 static GLuint linkProgram(GLuint v, GLuint f) {
+    if (!v || !f) return 0; // shader compilation already reported its error
     GLuint p = glCreateProgram();
     glAttachShader(p, v);
     glAttachShader(p, f);
@@ -755,6 +756,7 @@ static void updateChunks(const glm::vec3& playerPos) {
 static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
     int w, h;
     glfwGetWindowSize(window, &w, &h);
+    if (w <= 0 || h <= 0) return;
     g_mouseX =  (xpos / (double)w) * 2.0 - 1.0;
     g_mouseY = -((ypos / (double)h) * 2.0 - 1.0);
 }
@@ -958,7 +960,7 @@ static void main_loop() {
     double nowT = glfwGetTime();
     float  dt   = (float)(nowT - s.lastT);
     s.lastT     = nowT;
-    if (dt > 0.1f) dt = 0.016f;
+    if (dt > 0.1f || dt < 0.0f) dt = 0.016f;
 
     float t = (float)nowT - s.startTime;
 
@@ -1472,7 +1474,7 @@ static void main_loop() {
     }
 
     // -- Power-ups (floating, glowing cubes) --
-    if (!s.powerUps.empty()) {
+    if (!s.powerUps.empty() && s.debrisCube.vao) {
         glUniform1i(mu.objType, 5);
         glUniform1f(mu.enableSwirl, 0.0f);
         glUniform1i(mu.hasAlbedo, 0);
