@@ -384,20 +384,36 @@ static float g_touchLookDX = 0.0f;  // camera look delta (pixels/frame)
 static float g_touchLookDY = 0.0f;
 static bool  g_touchLookActive = false;
 
+// Runtime-adjustable state (can be set from JS)
+static int   g_activeParticles = MAX_PARTICLES;  // quality preset control
+static bool  g_soundMuted      = false;
+static bool  g_paused          = false;
+
 #ifdef PLATFORM_EMSCRIPTEN
 extern "C" {
     EMSCRIPTEN_KEEPALIVE void touch_set_move(float x, float y) {
-        g_touchMoveX = x;
-        g_touchMoveY = y;
+        g_touchMoveX = std::isfinite(x) ? std::clamp(x, -1.0f, 1.0f) : 0.0f;
+        g_touchMoveY = std::isfinite(y) ? std::clamp(y, -1.0f, 1.0f) : 0.0f;
     }
     EMSCRIPTEN_KEEPALIVE void touch_set_look(float dx, float dy, int active) {
-        g_touchLookDX = dx;
-        g_touchLookDY = dy;
+        g_touchLookDX = std::isfinite(dx) ? std::clamp(dx, -500.0f, 500.0f) : 0.0f;
+        g_touchLookDY = std::isfinite(dy) ? std::clamp(dy, -500.0f, 500.0f) : 0.0f;
         g_touchLookActive = (active != 0);
     }
     EMSCRIPTEN_KEEPALIVE void touch_set_cursor(float nx, float ny) {
-        g_mouseX = nx;
-        g_mouseY = ny;
+        g_mouseX = std::isfinite(nx) ? (double)std::clamp(nx, -2.0f, 2.0f) : 0.0;
+        g_mouseY = std::isfinite(ny) ? (double)std::clamp(ny, -2.0f, 2.0f) : 0.0;
+    }
+    // Quality preset: 0=low(600), 1=medium(1400), 2=high(2200)
+    EMSCRIPTEN_KEEPALIVE void set_quality(int level) {
+        const int counts[3] = {600, 1400, MAX_PARTICLES};
+        g_activeParticles = counts[std::clamp(level, 0, 2)];
+    }
+    EMSCRIPTEN_KEEPALIVE void toggle_sound(int muted) {
+        g_soundMuted = (muted != 0);
+    }
+    EMSCRIPTEN_KEEPALIVE void set_paused(int paused) {
+        g_paused = (paused != 0);
     }
 }
 #endif
@@ -878,7 +894,7 @@ static void playThunderSound() {
 }
 static void updateWindVolume(float tornadoScale) {
 #ifdef PLATFORM_EMSCRIPTEN
-    js_updateWindVolume(tornadoScale);
+    if (!g_soundMuted) js_updateWindVolume(tornadoScale);
 #endif
 }
 static void playVictorySound() {
@@ -906,6 +922,13 @@ static int getHighScore() {
 static void main_loop() {
     auto& s = app;
     if (!s.window) return;
+
+    // Skip physics/input updates while paused; glfwPollEvents keeps the
+    // window responsive so the user can un-pause via button or keyboard.
+    if (g_paused) {
+        glfwPollEvents();
+        return;
+    }
 
     // -- Timing --
     double nowT = glfwGetTime();
@@ -1566,7 +1589,7 @@ static void main_loop() {
     // ════════════════════════════════
     // PARTICLES — update, upload, draw
     // ════════════════════════════════
-    for (int i = 0; i < MAX_PARTICLES; ++i) {
+    for (int i = 0; i < g_activeParticles; ++i) {
         Particle& p = s.particles[i];
         bool inner = (i < INNER_PARTICLES);
 
@@ -1596,7 +1619,7 @@ static void main_loop() {
 
     // Upload to GPU (vec3 pos + float life per particle) — persistent buffer
     {
-        for (int i = 0; i < MAX_PARTICLES; ++i) {
+        for (int i = 0; i < g_activeParticles; ++i) {
             s.particleBuf[i*4+0] = s.particles[i].pos.x;
             s.particleBuf[i*4+1] = s.particles[i].pos.y;
             s.particleBuf[i*4+2] = s.particles[i].pos.z;
@@ -1604,7 +1627,7 @@ static void main_loop() {
         }
         glBindBuffer(GL_ARRAY_BUFFER, s.particleVBO);
         glBufferSubData(GL_ARRAY_BUFFER, 0,
-                        s.particleBuf.size() * sizeof(float), s.particleBuf.data());
+                        g_activeParticles * 4 * sizeof(float), s.particleBuf.data());
     }
 
     // Draw particles
@@ -1620,15 +1643,18 @@ static void main_loop() {
 
     glBindVertexArray(s.particleVAO);
 
+    int innerDraw = std::min(INNER_PARTICLES, g_activeParticles);
+    int outerDraw = std::max(0, g_activeParticles - INNER_PARTICLES);
+
     // inner (dense dark dust)
     glUniform3f(pu.color, 0.25f, 0.22f, 0.2f);
     glUniform1f(pu.pointScale, 1.5f);
-    glDrawArrays(GL_POINTS, 0, INNER_PARTICLES);
+    if (innerDraw > 0) glDrawArrays(GL_POINTS, 0, innerDraw);
 
     // outer (lighter debris)
     glUniform3f(pu.color, 0.5f, 0.45f, 0.35f);
     glUniform1f(pu.pointScale, 2.0f);
-    glDrawArrays(GL_POINTS, INNER_PARTICLES, MAX_PARTICLES - INNER_PARTICLES);
+    if (outerDraw > 0) glDrawArrays(GL_POINTS, INNER_PARTICLES, outerDraw);
 
     glBindVertexArray(0);
 

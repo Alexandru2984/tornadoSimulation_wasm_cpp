@@ -47,11 +47,25 @@ function serve() {
     echo "  (Ctrl+C pentru oprire)"
     cd "$BUILD_DIR"
 
-    # Try emrun first, fall back to python
+    # Try emrun first (has COOP/COEP support built-in)
     if command -v emrun &>/dev/null; then
         emrun --no_browser --port "$PORT" tornado.html
     elif command -v python3 &>/dev/null; then
-        python3 -m http.server "$PORT"
+        # Custom server with COOP/COEP headers required for SharedArrayBuffer
+        python3 - <<'PYEOF'
+import http.server, sys, os
+port = int(os.environ.get('PORT', 8080))
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+        self.send_header('Cross-Origin-Resource-Policy', 'same-origin')
+        super().end_headers()
+    def log_message(self, fmt, *args):
+        print(f'  {self.address_string()} {fmt % args}', flush=True)
+print(f'[Server] Listening on http://localhost:{port}', flush=True)
+http.server.HTTPServer(('', port), Handler).serve_forever()
+PYEOF
     else
         echo "[EROARE] Nu s-a gasit emrun sau python3 pentru server local."
         exit 1

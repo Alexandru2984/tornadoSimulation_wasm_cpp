@@ -30,10 +30,33 @@
         #info {
             font-size: clamp(0.65rem, 1.5vw, 0.85rem);
             color: #aaa;
-            margin-bottom: 4px;
+            margin-bottom: 2px;
             text-align: center;
             padding: 0 8px;
         }
+        #controls {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 4px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .ctrl-btn {
+            background: rgba(126,200,227,0.10);
+            border: 1px solid rgba(126,200,227,0.35);
+            color: #7ec8e3;
+            padding: 3px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.7rem;
+            font-family: inherit;
+            transition: background 0.15s;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        .ctrl-btn:hover { background: rgba(126,200,227,0.25); }
+        .ctrl-btn.active { background: rgba(255,100,100,0.18); border-color: rgba(255,100,100,0.45); color: #f88; }
+        @media (hover: none) and (pointer: coarse) { #controls { display: none; } }
         #canvas-container {
             position: relative;
             flex: 1;
@@ -128,6 +151,13 @@
 <body>
     <h1>Tornada 3D</h1>
     <p id="info">Mouse = tornado | WASD = camera | Click dreapta + drag = roteste</p>
+
+    <div id="controls">
+        <button class="ctrl-btn" id="btn-fullscreen">⛶ Fullscreen (F)</button>
+        <button class="ctrl-btn" id="btn-pause">⏸ Pauza (P)</button>
+        <button class="ctrl-btn" id="btn-mute">🔊 Sunet (M)</button>
+        <button class="ctrl-btn" id="btn-quality">⚙ Calitate: Ridicat</button>
+    </div>
 
     <div id="canvas-container">
         <canvas class="emscripten" id="canvas"
@@ -317,12 +347,59 @@
             container.addEventListener('touchcancel', endTouch, {passive: false});
         }
     </script>
-    {{{ SCRIPT }}}
-</body>
-</html>
+
+    <script>
+        // ── UI control buttons ───────────────────────────────────
+        document.getElementById('btn-fullscreen').addEventListener('click', function() {
+            var el = document.getElementById('canvas-container');
+            if (!document.fullscreenElement) {
+                (el.requestFullscreen || el.webkitRequestFullscreen || function(){}).call(el);
+            } else {
+                (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
+            }
+        });
+        document.addEventListener('fullscreenchange', function() {
+            document.getElementById('btn-fullscreen').textContent =
+                document.fullscreenElement ? '⛶ Fereastra (F)' : '⛶ Fullscreen (F)';
+        });
+
+        var paused = false;
+        document.getElementById('btn-pause').addEventListener('click', function() {
+            paused = !paused;
+            this.textContent = paused ? '▶ Continua (P)' : '⏸ Pauza (P)';
+            this.classList.toggle('active', paused);
+            if (Module._set_paused) Module._set_paused(paused ? 1 : 0);
+        });
+
+        var soundMuted = false;
+        document.getElementById('btn-mute').addEventListener('click', function() {
+            soundMuted = !soundMuted;
+            this.textContent = soundMuted ? '🔇 Mut (M)' : '🔊 Sunet (M)';
+            this.classList.toggle('active', soundMuted);
+            if (Module._toggle_sound) Module._toggle_sound(soundMuted ? 1 : 0);
+            if (window._tornadoAudio && window._tornadoAudio.windGain) {
+                window._tornadoAudio.windGain.gain.value = soundMuted ? 0 : 0.15;
+            }
+        });
+
+        var qualityLevel = 2;
+        var qualityLabels = ['⚙ Calitate: Scazut', '⚙ Calitate: Mediu', '⚙ Calitate: Ridicat'];
+        document.getElementById('btn-quality').addEventListener('click', function() {
+            qualityLevel = (qualityLevel + 1) % 3;
+            this.textContent = qualityLabels[qualityLevel];
+            if (Module._set_quality) Module._set_quality(qualityLevel);
+        });
+
+        window.addEventListener('keydown', function(e) {
+            if (e.target && e.target.tagName === 'BUTTON') return;
+            if (e.code === 'KeyF') document.getElementById('btn-fullscreen').click();
+            if (e.code === 'KeyP' || e.code === 'Escape') document.getElementById('btn-pause').click();
+            if (e.code === 'KeyM') document.getElementById('btn-mute').click();
+        });
+
         Module.setStatus('Se descarca...');
-        window.onerror = function() {
-            Module.setStatus('Eroare la initializare!');
+        window.onerror = function(msg, src, line, col, err) {
+            Module.setStatus('Eroare: ' + (err ? err.message : msg));
             spinnerElement.classList.add('hidden');
         };
     </script>
