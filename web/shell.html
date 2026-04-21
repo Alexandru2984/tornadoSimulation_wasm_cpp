@@ -482,6 +482,16 @@
                 document.getElementById('btn-pause').click();
             if (e.code === 'KeyM') document.getElementById('btn-mute').click();
             if (e.code === 'KeyR') document.getElementById('btn-restart').click();
+            if (e.code === 'KeyC') {
+                var pts = (Module && Module._get_score_points) ? Module._get_score_points() : 0;
+                var text = 'Tornado 3D - Scor: ' + pts + ' puncte';
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(text).then(function() {
+                        var s = document.getElementById('status');
+                        if (s) { var old = s.textContent; s.textContent = 'Scor copiat!'; setTimeout(function(){ s.textContent = old; }, 2000); }
+                    });
+                }
+            }
         });
 
         // Resume AudioContext on first user interaction (browsers suspend it before a gesture)

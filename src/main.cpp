@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <unordered_set>
 #include <algorithm>
+#include <deque>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -75,6 +76,9 @@ static const float DEBRIS_LIFETIME     = 5.0f;
 // Tornado growth
 static const float TORNADO_GROWTH_PER_OBJ = 0.04f; // scale bump per destroyed object
 static const float TORNADO_MAX_SCALE      = 3.0f;
+
+// EF-scale destruction radius multipliers (index = EF0..EF5)
+static const float EF_RADIUS_MULT[6] = {0.75f, 0.85f, 1.0f, 1.15f, 1.3f, 1.5f};
 
 // Weather
 static const int   MAX_RAIN            = 4000;
@@ -142,7 +146,7 @@ struct RainUniforms {
     GLint proj=-1, view=-1;
 };
 struct HudUniforms {
-    GLint fontTex=-1, color=-1;
+    GLint fontTex=-1, color=-1, alpha=-1;
 };
 
 // ── Structs ──────────────────────────────────────────────────────────
@@ -220,6 +224,7 @@ struct Score {
     int treesDestroyed  = 0;
     int propsDestroyed  = 0;
     int totalDestroyed  = 0;
+    int scorePoints     = 0;
 };
 
 // Game state machine
@@ -232,6 +237,7 @@ struct Wave {
     int destroyed   = 0;     // current wave progress
     float timer     = 0.0f;  // time in this wave
     float announceTimer = 0.0f;
+    int efScale     = 0;     // EF0..EF5
 };
 
 // Power-up types
@@ -310,6 +316,15 @@ struct AppState {
     Score score;
     float tornadoScale = 1.0f;
     float lastDestroyTime = 0.0f;  // for decay grace period
+
+    // Combo multiplier
+    int   comboCount      = 0;
+    float comboTimer      = 0.0f;
+    float comboMultiplier = 1.0f;
+
+    // Tornado path trail (world XZ positions)
+    std::deque<glm::vec2> tornadoTrail;
+    float trailSampleTimer = 0.0f;
 
     // Wave system
     GamePhase gamePhase = GamePhase::WAVE_ANNOUNCE;
@@ -435,7 +450,15 @@ extern "C" {
         for (auto& pr : app.chunkProps)  { pr.health = 1.0f; pr.destroyed = false; }
         app.debrisPieces.clear();
         app.scorchMarks.clear();
+        app.comboCount = 0;
+        app.comboTimer = 0.0f;
+        app.comboMultiplier = 1.0f;
+        app.tornadoTrail.clear();
+        app.trailSampleTimer = 0.0f;
         g_paused = false;
+    }
+    EMSCRIPTEN_KEEPALIVE int get_score_points() {
+        return app.score.scorePoints;
     }
 }
 #endif
@@ -1101,9 +1124,20 @@ static void main_loop() {
     // ── Update wind sound based on tornado size ──
     updateWindVolume(s.tornadoScale);
 
+    // ── Combo timer decay ──
+    if (s.comboTimer > 0.0f) {
+        s.comboTimer -= dt;
+        if (s.comboTimer <= 0.0f) {
+            s.comboCount      = 0;
+            s.comboMultiplier = 1.0f;
+        }
+    }
+
     // ── Destruction: damage houses near tornado ──
-    float effectiveRadius = DESTRUCTION_RADIUS * s.tornadoScale * sizeMult;
+    float efMult = EF_RADIUS_MULT[std::clamp(s.wave.efScale, 0, 5)];
+    float effectiveRadius = DESTRUCTION_RADIUS * s.tornadoScale * sizeMult * efMult;
     bool destroyedSomething = false;
+    float newPoints = 0.0f;
     for (auto& h : s.houses) {
         if (h.destroyed) continue;
         float dist = glm::length(glm::vec2(h.pos.x - s.tornadoPos.x,
@@ -1117,6 +1151,7 @@ static void main_loop() {
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
+                newPoints += 100.0f;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ, TORNADO_MAX_SCALE);
                 if ((int)s.scorchMarks.size() < MAX_SCORCH_MARKS)
                     s.scorchMarks.push_back({h.pos, 1.5f});
@@ -1138,6 +1173,7 @@ static void main_loop() {
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
+                newPoints += 30.0f;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.5f, TORNADO_MAX_SCALE);
             }
         }
@@ -1159,15 +1195,23 @@ static void main_loop() {
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
+                // car=50pts, fence=20pts, pole=15pts
+                float propPts = (pr.propType == 1) ? 50.0f : (pr.propType == 0 ? 20.0f : 15.0f);
+                newPoints += propPts;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.3f, TORNADO_MAX_SCALE);
             }
         }
     }
 
-    // ── Post-destruction: sounds, wave check ──
+    // ── Post-destruction: sounds, combo, scoring, wave check ──
     if (destroyedSomething) {
         s.lastDestroyTime = t;
         playDestroySound();
+        // Combo: increment, apply multiplier, reset timer
+        s.comboCount++;
+        s.comboTimer      = 2.5f;
+        s.comboMultiplier = 1.0f + std::min(s.comboCount / 3.0f, 4.0f);
+        s.score.scorePoints += (int)(newPoints * s.comboMultiplier);
     }
 
     // Wave completion check
@@ -1177,12 +1221,13 @@ static void main_loop() {
             s.gamePhase = GamePhase::VICTORY;
             s.victoryTimer = 0.0f;
             playVictorySound();
-            saveScore(s.score.totalDestroyed, s.wave.number);
+            saveScore(s.score.scorePoints, s.wave.number);
         } else {
             s.wave.number++;
             s.wave.target = WAVE_BASE_TARGET + (s.wave.number - 1) * 3;
             s.wave.destroyed = 0;
             s.wave.announceTimer = 0.0f;
+            s.wave.efScale = std::min(s.wave.number / 2, 5);
             s.gamePhase = GamePhase::WAVE_ANNOUNCE;
             playWaveSound();
         }
@@ -1195,6 +1240,15 @@ static void main_loop() {
         if ((int)s.scorchMarks.size() < MAX_SCORCH_MARKS)
             s.scorchMarks.push_back({glm::vec3(s.tornadoPos.x, 0.01f, s.tornadoPos.y),
                                       0.8f * s.tornadoScale});
+    }
+
+    // ── Tornado trail sampling ──
+    s.trailSampleTimer += dt;
+    if (s.trailSampleTimer >= 0.15f) {
+        s.trailSampleTimer = 0.0f;
+        s.tornadoTrail.push_back(s.tornadoPos);
+        if ((int)s.tornadoTrail.size() > 40)
+            s.tornadoTrail.pop_front();
     }
 
     // ── Debris physics ──
@@ -1566,6 +1620,32 @@ static void main_loop() {
         glDrawElements(GL_TRIANGLES, s.avocadoModel.indexCount, GL_UNSIGNED_INT, nullptr);
     }
 
+    // -- Tornado path trail (ghost cones) --
+    if (!s.tornadoTrail.empty()) {
+        int trailLen = (int)s.tornadoTrail.size();
+        int trailStart = std::max(0, trailLen - 10);
+        glUniform1f(mu.enableSwirl, 1.0f);
+        glUniform1i(mu.objType, 0);
+        glUniform1i(mu.hasAlbedo, 0);
+        for (int ti = trailStart; ti < trailLen - 1; ++ti) {
+            float age = (float)(trailLen - 1 - ti) / 10.0f; // 0=newest, 1=oldest
+            float opacity = (1.0f - age) * 0.22f;
+            if (opacity < 0.01f) continue;
+            float ghostScale = s.tornadoScale * (0.25f + 0.15f * (1.0f - age));
+            glm::vec2 tp = s.tornadoTrail[ti];
+            float ty = getTerrainHeight(tp.x, tp.y);
+            glm::mat4 trailModel = glm::translate(glm::mat4(1.0f), glm::vec3(tp.x, ty, tp.y));
+            trailModel = glm::scale(trailModel, glm::vec3(ghostScale));
+            glm::mat3 nm = normalMat3(trailModel);
+            glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(trailModel));
+            glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+            glUniform3f(mu.tint, 0.55f, 0.55f, 0.75f);
+            glUniform1f(mu.opacity, opacity);
+            glBindVertexArray(s.tornadoVAO);
+            glDrawElements(GL_TRIANGLES, s.tornadoIndexCount, GL_UNSIGNED_INT, nullptr);
+        }
+    }
+
     // -- Tornado mesh (swirl enabled, semi-transparent) --
     {
         float tornadoTerrainY = getTerrainHeight(s.tornadoPos.x, s.tornadoPos.y);
@@ -1718,9 +1798,10 @@ static void main_loop() {
         glBindTexture(GL_TEXTURE_2D, s.fontTex);
         glUniform1i(s.hu.fontTex, 0);
 
-        // Render function: each char is a textured quad
+        // Render function: each char is a textured quad (font atlas mode)
         auto renderLine = [&](const char* text, float startX, float startY,
                               float charW, float charH, glm::vec3 color) {
+            glUniform1f(s.hu.alpha, -1.0f); // font texture mode
             glUniform3fv(s.hu.color, 1, glm::value_ptr(color));
             std::vector<float> verts;
             float cx = startX;
@@ -1745,14 +1826,15 @@ static void main_loop() {
             glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(verts.size()/4));
         };
 
-        // Helper: render a filled quad (no texture)
-        auto renderQuad = [&](float x0, float y0, float x1, float y1, glm::vec3 color) {
+        // Helper: render a filled quad with explicit alpha (solid, no texture)
+        auto renderQuadA = [&](float x0, float y0, float x1, float y1,
+                                glm::vec3 color, float alpha) {
+            glUniform1f(s.hu.alpha, alpha);
             glUniform3fv(s.hu.color, 1, glm::value_ptr(color));
-            // Use space char UV (fully empty region)
-            float u0 = 0.0f, v0 = 0.0f;
+            float u = 0.0f;
             float verts[] = {
-                x0,y0, u0,v0, x1,y0, u0,v0, x1,y1, u0,v0,
-                x0,y0, u0,v0, x1,y1, u0,v0, x0,y1, u0,v0
+                x0,y0, u,u, x1,y0, u,u, x1,y1, u,u,
+                x0,y0, u,u, x1,y1, u,u, x0,y1, u,u
             };
             glBindVertexArray(s.hudVAO);
             glBindBuffer(GL_ARRAY_BUFFER, s.hudVBO);
@@ -1760,23 +1842,40 @@ static void main_loop() {
             glDrawArrays(GL_TRIANGLES, 0, 6);
         };
 
+        // Helper: render a fully opaque filled quad
+        auto renderQuad = [&](float x0, float y0, float x1, float y1, glm::vec3 color) {
+            renderQuadA(x0, y0, x1, y1, color, 1.0f);
+        };
+
         float cw = 0.022f, ch = 0.045f;
         float scw = cw * 0.8f, sch = ch * 0.8f;
 
         // ── Top-left: score info ──
         char buf[64];
+        snprintf(buf, sizeof(buf), "SCORE: %d", s.score.scorePoints);
+        renderLine(buf, -0.98f, 0.92f, cw, ch, glm::vec3(1.0f, 0.85f, 0.0f));
+
         snprintf(buf, sizeof(buf), "DESTROYED: %d", s.score.totalDestroyed);
-        renderLine(buf, -0.98f, 0.92f, cw, ch, glm::vec3(1.0f, 0.9f, 0.3f));
+        renderLine(buf, -0.98f, 0.86f, scw, sch, glm::vec3(1.0f, 0.9f, 0.3f));
 
         snprintf(buf, sizeof(buf), "H:%d T:%d P:%d",
                  s.score.housesDestroyed, s.score.treesDestroyed, s.score.propsDestroyed);
-        renderLine(buf, -0.98f, 0.86f, scw, sch, glm::vec3(0.8f, 0.8f, 0.8f));
+        renderLine(buf, -0.98f, 0.81f, scw * 0.85f, sch * 0.85f, glm::vec3(0.8f, 0.8f, 0.8f));
 
         snprintf(buf, sizeof(buf), "TORNADO x%.1f", s.tornadoScale);
-        renderLine(buf, -0.98f, 0.80f, scw, sch, glm::vec3(1.0f, 0.5f, 0.3f));
+        renderLine(buf, -0.98f, 0.76f, scw * 0.85f, sch * 0.85f, glm::vec3(1.0f, 0.5f, 0.3f));
+
+        // ── Combo multiplier display ──
+        if (s.comboCount > 0) {
+            float comboPulse = 0.7f + 0.3f * sinf(t * 8.0f);
+            snprintf(buf, sizeof(buf), "COMBO x%d  x%.1f", s.comboCount, s.comboMultiplier);
+            renderLine(buf, -0.98f, 0.70f, scw * 0.85f, sch * 0.85f,
+                       glm::vec3(1.0f, 0.4f, 0.1f) * comboPulse);
+        }
 
         // ── Top-right: wave info ──
-        snprintf(buf, sizeof(buf), "WAVE %d/%d", s.wave.number, TOTAL_WAVES);
+        snprintf(buf, sizeof(buf), "WAVE %d/%d  EF%d",
+                 s.wave.number, TOTAL_WAVES, s.wave.efScale);
         renderLine(buf, 0.52f, 0.92f, cw, ch, glm::vec3(0.5f, 0.9f, 1.0f));
 
         // Wave progress bar
@@ -1792,7 +1891,7 @@ static void main_loop() {
         renderLine(buf, 0.52f, 0.83f, scw * 0.8f, sch * 0.8f, glm::vec3(0.7f, 0.7f, 0.7f));
 
         // ── Active power-ups (left side, below score) ──
-        float puY = 0.72f;
+        float puY = 0.63f;
         for (const auto& ap : s.activePowerUps) {
             const char* name = "";
             glm::vec3 puCol(1.0f);
@@ -1808,6 +1907,47 @@ static void main_loop() {
             renderLine(buf, -0.98f, puY, scw * 0.75f, sch * 0.75f,
                        puCol * alpha);
             puY -= 0.05f;
+        }
+
+        // ── Compass: tornado direction indicator (top-center) ──
+        {
+            // Camera forward/right vectors in world XZ
+            float yawRad = glm::radians(s.camera.yaw);
+            glm::vec2 camFwd( cosf(yawRad), sinf(yawRad));
+            glm::vec2 camRight(-sinf(yawRad), cosf(yawRad));
+            glm::vec2 toTornado = glm::vec2(s.tornadoPos.x - s.camera.pos.x,
+                                            s.tornadoPos.y - s.camera.pos.z);
+            float dist3d = glm::length(toTornado);
+            float bearing = 0.0f;
+            if (dist3d > 0.1f) {
+                glm::vec2 dir = toTornado / dist3d;
+                float fwdComp   = glm::dot(dir, camFwd);
+                float rightComp = glm::dot(dir, camRight);
+                bearing = atan2f(rightComp, fwdComp);
+            }
+
+            float cX = 0.0f, cY = 0.73f;
+            float outerR = 0.07f;
+            float dotS2 = 0.006f;
+
+            // Circle outline (12 dots)
+            for (int i = 0; i < 12; ++i) {
+                float a = (float)i * (float)M_PI / 6.0f;
+                float dx = outerR * sinf(a), dy = outerR * cosf(a);
+                renderQuadA(cX+dx-dotS2, cY+dy-dotS2, cX+dx+dotS2, cY+dy+dotS2,
+                            glm::vec3(0.4f, 0.5f, 0.6f), 0.6f);
+            }
+            // Tornado indicator dot
+            float iR = outerR * 0.8f;
+            float idx = iR * sinf(bearing), idy = iR * cosf(bearing);
+            float bigS = 0.013f;
+            renderQuad(cX+idx-bigS, cY+idy-bigS, cX+idx+bigS, cY+idy+bigS,
+                       glm::vec3(1.0f, 0.4f, 0.1f));
+            // Distance text
+            snprintf(buf, sizeof(buf), "%.0fm", dist3d);
+            float tw = (float)strlen(buf) * scw * 0.7f;
+            renderLine(buf, cX - tw * 0.5f, cY - outerR - sch * 0.75f,
+                       scw * 0.7f, sch * 0.7f, glm::vec3(0.9f, 0.7f, 0.5f));
         }
 
         // ── Minimap (bottom-right corner) ──
@@ -1878,6 +2018,19 @@ static void main_loop() {
                     renderQuad(p.x-dotS, p.y-dotS, p.x+dotS, p.y+dotS,
                                glm::vec3(1.0f, 1.0f, 0.0f));
             }
+            // Tornado trail (faded gray dots)
+            {
+                int trailLen = (int)s.tornadoTrail.size();
+                for (int ti = 0; ti < trailLen; ++ti) {
+                    float age = (trailLen > 1) ? (float)(trailLen - 1 - ti) / (float)(trailLen - 1) : 0.0f;
+                    float trailAlpha = (1.0f - age) * 0.45f;
+                    if (trailAlpha < 0.05f) continue;
+                    glm::vec2 p = worldToMM(s.tornadoTrail[ti].x, s.tornadoTrail[ti].y);
+                    if (inMM(p))
+                        renderQuadA(p.x-dotS*0.4f, p.y-dotS*0.4f, p.x+dotS*0.4f, p.y+dotS*0.4f,
+                                    glm::vec3(0.6f, 0.6f, 0.7f), trailAlpha);
+                }
+            }
             // Tornado (white cross)
             {
                 glm::vec2 tp = worldToMM(s.tornadoPos.x, s.tornadoPos.y);
@@ -1906,10 +2059,20 @@ static void main_loop() {
             renderLine(buf, -textW * 0.5f, 0.1f, bigCW, bigCH,
                        glm::vec3(0.5f, 0.9f, 1.0f) * alpha);
 
-            snprintf(buf, sizeof(buf), "DESTROY %d OBJECTS", s.wave.target);
+            // EF scale label
+            static const glm::vec3 EF_COLORS[6] = {
+                {0.5f,0.9f,0.5f}, {0.8f,0.9f,0.3f}, {1.0f,0.8f,0.2f},
+                {1.0f,0.55f,0.1f}, {1.0f,0.25f,0.05f}, {1.0f,0.1f,0.1f}
+            };
+            snprintf(buf, sizeof(buf), "EF%d TORNADO", s.wave.efScale);
+            float efW = (float)strlen(buf) * 0.032f;
+            renderLine(buf, -efW * 0.5f, 0.03f, 0.032f, 0.064f,
+                       EF_COLORS[std::clamp(s.wave.efScale, 0, 5)] * alpha);
+
             float smCW = 0.025f, smCH = 0.05f;
+            snprintf(buf, sizeof(buf), "DESTROY %d OBJECTS", s.wave.target);
             float stW = (float)strlen(buf) * smCW;
-            renderLine(buf, -stW * 0.5f, 0.0f, smCW, smCH,
+            renderLine(buf, -stW * 0.5f, -0.05f, smCW, smCH,
                        glm::vec3(0.8f, 0.8f, 0.8f) * alpha);
         }
 
@@ -1918,21 +2081,26 @@ static void main_loop() {
             s.victoryTimer += dt;
 
             // Semi-dark background
-            renderQuad(-0.6f, -0.35f, 0.6f, 0.45f,
-                       glm::vec3(0.02f, 0.02f, 0.05f));
+            renderQuadA(-0.62f, -0.42f, 0.62f, 0.48f,
+                       glm::vec3(0.02f, 0.02f, 0.05f), 0.85f);
 
             float bigCW = 0.06f, bigCH = 0.12f;
             const char* victoryText = "VICTORY";
             float vw = 7.0f * bigCW;
             float pulse = 0.7f + 0.3f * sinf(t * 3.0f);
-            renderLine(victoryText, -vw * 0.5f, 0.2f, bigCW, bigCH,
+            renderLine(victoryText, -vw * 0.5f, 0.25f, bigCW, bigCH,
                        glm::vec3(1.0f, 0.85f, 0.0f) * pulse);
 
             float smCW = 0.02f, smCH = 0.04f;
             snprintf(buf, sizeof(buf), "ALL %d WAVES COMPLETE", TOTAL_WAVES);
             float bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, 0.12f, smCW, smCH,
+            renderLine(buf, -bw2 * 0.5f, 0.17f, smCW, smCH,
                        glm::vec3(0.7f, 0.9f, 1.0f));
+
+            snprintf(buf, sizeof(buf), "SCORE: %d", s.score.scorePoints);
+            bw2 = (float)strlen(buf) * smCW;
+            renderLine(buf, -bw2 * 0.5f, 0.10f, smCW, smCH,
+                       glm::vec3(1.0f, 0.9f, 0.2f));
 
             snprintf(buf, sizeof(buf), "TOTAL DESTROYED: %d", s.score.totalDestroyed);
             bw2 = (float)strlen(buf) * smCW;
@@ -1941,22 +2109,33 @@ static void main_loop() {
 
             snprintf(buf, sizeof(buf), "MAX TORNADO: x%.1f", s.tornadoScale);
             bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, -0.04f, smCW, smCH,
+            renderLine(buf, -bw2 * 0.5f, -0.03f, smCW, smCH,
                        glm::vec3(1.0f, 0.5f, 0.3f));
 
             int hi = getHighScore();
             snprintf(buf, sizeof(buf), "HIGH SCORE: %d", hi);
             bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, -0.14f, smCW, smCH,
+            renderLine(buf, -bw2 * 0.5f, -0.11f, smCW, smCH,
                        glm::vec3(1.0f, 0.9f, 0.3f));
 
             if (s.victoryTimer > 2.0f) {
                 float blink = (sinf(t * 4.0f) > 0.0f) ? 1.0f : 0.3f;
+                const char* copyHint = "PRESS C TO COPY SCORE";
+                float chw = (float)strlen(copyHint) * smCW * 0.85f;
+                renderLine(copyHint, -chw * 0.5f, -0.22f, smCW * 0.85f, smCH * 0.85f,
+                           glm::vec3(0.4f, 0.9f, 0.9f) * blink);
                 const char* restart = "PRESS R TO RESTART";
                 float rw = (float)strlen(restart) * smCW;
-                renderLine(restart, -rw * 0.5f, -0.25f, smCW, smCH,
+                renderLine(restart, -rw * 0.5f, -0.30f, smCW, smCH,
                            glm::vec3(0.6f, 0.8f, 0.6f) * blink);
             }
+        }
+
+        // ── Lightning full-screen flash ──
+        if (s.lightning.intensity > 0.01f) {
+            float flashAlpha = s.lightning.intensity * 0.28f;
+            renderQuadA(-1.0f, -1.0f, 1.0f, 1.0f,
+                        glm::vec3(0.9f, 0.95f, 1.0f), flashAlpha);
         }
 
         glDisable(GL_BLEND);
@@ -1966,7 +2145,6 @@ static void main_loop() {
     // ── Restart on R key (during victory) ──
     if (s.gamePhase == GamePhase::VICTORY) {
         if (glfwGetKey(s.window, GLFW_KEY_R) == GLFW_PRESS) {
-            // Reset game state
             s.score = Score{};
             s.tornadoScale = 1.0f;
             s.lastDestroyTime = t;
@@ -1977,12 +2155,16 @@ static void main_loop() {
             s.activePowerUps.clear();
             s.powerUps.clear();
             s.powerUpSpawnTimer = 5.0f;
-            // Re-health all objects
-            for (auto& h : s.houses)     { h.health = 1.0f; h.destroyed = false; }
+            for (auto& h : s.houses)      { h.health = 1.0f; h.destroyed = false; }
             for (auto& tr : s.chunkTrees) { tr.health = 1.0f; tr.destroyed = false; }
             for (auto& pr : s.chunkProps) { pr.health = 1.0f; pr.destroyed = false; }
             s.debrisPieces.clear();
             s.scorchMarks.clear();
+            s.comboCount = 0;
+            s.comboTimer = 0.0f;
+            s.comboMultiplier = 1.0f;
+            s.tornadoTrail.clear();
+            s.trailSampleTimer = 0.0f;
         }
     }
 
@@ -2172,6 +2354,7 @@ int main() {
         GLuint p = app.hudProgram;
         app.hu.fontTex = glGetUniformLocation(p, "uFontTex");
         app.hu.color   = glGetUniformLocation(p, "uColor");
+        app.hu.alpha   = glGetUniformLocation(p, "uAlpha");
     }
 
     // ══════════════════════════════════════
