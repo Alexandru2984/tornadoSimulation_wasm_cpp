@@ -146,6 +146,48 @@
             #joystick-base { display: block; }
             #info { display: none; }
         }
+        #scores-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.75);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+        #scores-modal.hidden { display: none; }
+        #scores-box {
+            background: #1a1a2e;
+            border: 1px solid #7ec8e3;
+            border-radius: 10px;
+            padding: 20px 28px;
+            min-width: 280px;
+            max-width: 440px;
+            width: 90%;
+        }
+        #scores-box h2 {
+            color: #ffd700;
+            text-align: center;
+            margin-bottom: 12px;
+            font-size: 1.1rem;
+        }
+        #scores-list {
+            list-style: none;
+            font-size: 0.85rem;
+            line-height: 1.8;
+            color: #ddd;
+        }
+        #scores-close {
+            display: block;
+            margin: 14px auto 0;
+            padding: 6px 22px;
+            background: #7ec8e3;
+            color: #1a1a2e;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
     </style>
 </head>
 <body>
@@ -157,6 +199,8 @@
         <button class="ctrl-btn" id="btn-pause">⏸ Pauza (P)</button>
         <button class="ctrl-btn" id="btn-mute">🔊 Sunet (M)</button>
         <button class="ctrl-btn" id="btn-quality">⚙ Calitate: Ridicat</button>
+        <button class="ctrl-btn" id="btn-restart">↺ Restart (R)</button>
+        <button class="ctrl-btn" id="btn-scores">🏆 Scoruri</button>
     </div>
 
     <div id="canvas-container">
@@ -197,6 +241,13 @@
                 spinnerElement.classList.add('hidden');
                 statusElement.textContent = 'Rulare...';
                 initTouchControls();
+                // Auto-downgrade to Medium on mobile/touch devices
+                var isMobile = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+                if (isMobile && Module._set_quality) {
+                    qualityLevel = 1;
+                    document.getElementById('btn-quality').textContent = qualityLabels[1];
+                    Module._set_quality(1);
+                }
             },
             monitorRunDependencies: function(left) {
                 if (left === 0) {
@@ -390,11 +441,38 @@
             if (Module._set_quality) Module._set_quality(qualityLevel);
         });
 
+        document.getElementById('btn-restart').addEventListener('click', function() {
+            if (Module._restart_game) {
+                Module._restart_game();
+                // If game was paused, unpause so it resumes
+                if (paused) document.getElementById('btn-pause').click();
+            }
+        });
+
+        document.getElementById('btn-scores').addEventListener('click', function() {
+            var modal = document.getElementById('scores-modal');
+            var list  = document.getElementById('scores-list');
+            var scores = [];
+            try { scores = JSON.parse(localStorage.getItem('tornado3d_scores') || '[]'); } catch(e) {}
+            list.innerHTML = scores.length === 0
+                ? '<li>Niciun scor salvat.</li>'
+                : scores.map(function(s, i) {
+                    return '<li>#' + (i+1) + ' — ' + s.score + ' obiecte · Unda ' + s.wave + ' · ' + (s.date||'') + '</li>';
+                }).join('');
+            modal.classList.remove('hidden');
+        });
+        document.getElementById('scores-close').addEventListener('click', function() {
+            document.getElementById('scores-modal').classList.add('hidden');
+        });
+
         window.addEventListener('keydown', function(e) {
             if (e.target && e.target.tagName === 'BUTTON') return;
             if (e.code === 'KeyF') document.getElementById('btn-fullscreen').click();
-            if (e.code === 'KeyP' || e.code === 'Escape') document.getElementById('btn-pause').click();
+            // Only use Escape as pause when NOT exiting fullscreen
+            if (e.code === 'KeyP' || (e.code === 'Escape' && !document.fullscreenElement))
+                document.getElementById('btn-pause').click();
             if (e.code === 'KeyM') document.getElementById('btn-mute').click();
+            if (e.code === 'KeyR') document.getElementById('btn-restart').click();
         });
 
         Module.setStatus('Se descarca...');
@@ -405,5 +483,14 @@
     </script>
 
     {{{ SCRIPT }}}
+
+    <!-- Leaderboard modal -->
+    <div id="scores-modal" class="hidden">
+        <div id="scores-box">
+            <h2>🏆 Top Scoruri</h2>
+            <ul id="scores-list"></ul>
+            <button id="scores-close">Inchide</button>
+        </div>
+    </div>
 </body>
 </html>

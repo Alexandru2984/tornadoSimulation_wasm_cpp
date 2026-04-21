@@ -1,0 +1,35 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        uses: emscripten-core/setup-emscripten@v1
+        with:
+          version: 3.1.64
+
+      - name: Build WASM
+        run: |
+          emcmake cmake -B build-wasm -S . -DCMAKE_BUILD_TYPE=Release
+          emmake cmake --build build-wasm -j$(nproc)
+          # Publish as index.html so GitHub Pages serves it at the root URL
+          cp build-wasm/tornado.html build-wasm/index.html
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./build-wasm
+          publish_branch: gh-pages

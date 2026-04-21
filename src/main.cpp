@@ -256,7 +256,10 @@ struct ChunkKey {
 };
 struct ChunkKeyHash {
     size_t operator()(const ChunkKey& k) const {
-        return std::hash<int>()(k.x) ^ (std::hash<int>()(k.z) << 16);
+        // Boost-style hash_combine for better distribution than XOR-with-shift.
+        size_t h1 = std::hash<int>()(k.x);
+        size_t h2 = std::hash<int>()(k.z);
+        return h1 ^ (h2 * 2654435761ULL + 0x9e3779b9ULL + (h1 << 6) + (h1 >> 2));
     }
 };
 
@@ -415,6 +418,25 @@ extern "C" {
     EMSCRIPTEN_KEEPALIVE void set_paused(int paused) {
         g_paused = (paused != 0);
     }
+    EMSCRIPTEN_KEEPALIVE void restart_game() {
+        if (app.gamePhase != GamePhase::VICTORY) return;
+        app.score = Score{};
+        app.tornadoScale = 1.0f;
+        app.lastDestroyTime = (float)(glfwGetTime() - app.startTime);
+        app.wave = Wave{};
+        app.wave.announceTimer = 0.0f;
+        app.gamePhase = GamePhase::WAVE_ANNOUNCE;
+        app.victoryTimer = 0.0f;
+        app.activePowerUps.clear();
+        app.powerUps.clear();
+        app.powerUpSpawnTimer = 5.0f;
+        for (auto& h  : app.houses)      { h.health  = 1.0f; h.destroyed  = false; }
+        for (auto& tr : app.chunkTrees)  { tr.health = 1.0f; tr.destroyed = false; }
+        for (auto& pr : app.chunkProps)  { pr.health = 1.0f; pr.destroyed = false; }
+        app.debrisPieces.clear();
+        app.scorchMarks.clear();
+        g_paused = false;
+    }
 }
 #endif
 
@@ -550,9 +572,10 @@ static void spawnDebris(const glm::vec3& pos, int count) {
 
 // ── Procedural terrain noise ─────────────────────────────────────────
 static float hashNoise(int ix, int iz) {
-    int n = ix * 374761393 + iz * 668265263;
+    // Use uint32_t for all arithmetic — signed overflow is undefined behaviour.
+    uint32_t n = (uint32_t)ix * 374761393u + (uint32_t)iz * 668265263u;
     n = (n << 13) ^ n;
-    return 1.0f - (float)((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0f;
+    return 1.0f - (float)((n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu) / 1073741824.0f;
 }
 
 static float smoothNoise(float x, float z) {
@@ -600,8 +623,9 @@ static void generateChunk(int cx, int cz) {
     if (app.loadedChunks.count(key)) return;
     app.loadedChunks.insert(key);
 
-    // Deterministic seed from chunk coords
-    uint32_t seed = (uint32_t)(cx * 73856093) ^ (uint32_t)(cz * 19349663);
+    // Deterministic seed from chunk coords — cast to uint32_t before multiply
+    // so arithmetic wraps without undefined behaviour.
+    uint32_t seed = ((uint32_t)cx * 73856093u) ^ ((uint32_t)cz * 19349663u);
     std::mt19937 cRng(seed);
     std::uniform_real_distribution<float> r01(0.0f, 1.0f);
 
@@ -1698,7 +1722,8 @@ static void main_loop() {
             glUniform3fv(s.hu.color, 1, glm::value_ptr(color));
             std::vector<float> verts;
             float cx = startX;
-            for (const char* c = text; *c; ++c) {
+            int _rlCount = 0;
+            for (const char* c = text; *c && _rlCount < 256; ++c, ++_rlCount) {
                 int ch = (int)(unsigned char)*c;
                 if (ch < 32 || ch > 126) ch = 32;
                 int col = (ch - 32) % 16;

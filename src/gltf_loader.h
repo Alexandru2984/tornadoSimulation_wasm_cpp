@@ -41,52 +41,81 @@ inline bool loadSimpleGLTF(const std::string &path, GLTFModel &out) {
         std::cerr << "gltf: missing POSITION or NORMAL attribute" << std::endl;
         return false;
     }
-    // positions
-    const tinygltf::Accessor &accPos = model.accessors[prim.attributes.at("POSITION")];
-    const tinygltf::BufferView &bvPos = model.bufferViews[accPos.bufferView];
-    const tinygltf::Buffer &bufPos = model.buffers[bvPos.buffer];
-    const unsigned char* posData = bufPos.data.data() + bvPos.byteOffset + accPos.byteOffset;
-    // normals
-    const tinygltf::Accessor &accNorm = model.accessors[prim.attributes.at("NORMAL")];
-    const tinygltf::BufferView &bvNorm = model.bufferViews[accNorm.bufferView];
-    const tinygltf::Buffer &bufNorm = model.buffers[bvNorm.buffer];
-    const unsigned char* normData = bufNorm.data.data() + bvNorm.byteOffset + accNorm.byteOffset;
-    // texcoords (optional)
+    if (prim.indices < 0) {
+        std::cerr << "gltf: no index accessor" << std::endl;
+        return false;
+    }
+
+    // Safely resolve an accessor to a raw data pointer, validating all indices
+    // and computing the effective per-element stride.  Returns nullptr on error.
+    auto resolveAccessor = [&](int accIdx_, size_t requiredElemBytes, size_t& strideOut)
+        -> const unsigned char* {
+        if (accIdx_ < 0 || static_cast<size_t>(accIdx_) >= model.accessors.size())
+            return nullptr;
+        const auto& acc = model.accessors[static_cast<size_t>(accIdx_)];
+        if (acc.bufferView < 0 || static_cast<size_t>(acc.bufferView) >= model.bufferViews.size())
+            return nullptr;
+        const auto& bv = model.bufferViews[static_cast<size_t>(acc.bufferView)];
+        if (bv.buffer < 0 || static_cast<size_t>(bv.buffer) >= model.buffers.size())
+            return nullptr;
+        const auto& buf = model.buffers[static_cast<size_t>(bv.buffer)];
+        strideOut = (bv.byteStride != 0) ? static_cast<size_t>(bv.byteStride) : requiredElemBytes;
+        if (strideOut < requiredElemBytes) return nullptr;
+        size_t dataOffset = static_cast<size_t>(bv.byteOffset) + static_cast<size_t>(acc.byteOffset);
+        size_t lastElemStart = dataOffset + strideOut * (acc.count > 0 ? acc.count - 1 : 0);
+        if (lastElemStart + requiredElemBytes > buf.data.size()) return nullptr;
+        return buf.data.data() + dataOffset;
+    };
+
+    size_t posStride = 0, normStride = 0, uvStride = 0;
+    const unsigned char* posData = resolveAccessor(
+        prim.attributes.at("POSITION"), 3 * sizeof(float), posStride);
+    if (!posData) { std::cerr << "gltf: invalid POSITION accessor" << std::endl; return false; }
+
+    const unsigned char* normData = resolveAccessor(
+        prim.attributes.at("NORMAL"), 3 * sizeof(float), normStride);
+    if (!normData) { std::cerr << "gltf: invalid NORMAL accessor" << std::endl; return false; }
+
     const unsigned char* uvData = nullptr;
     if (prim.attributes.find("TEXCOORD_0") != prim.attributes.end()) {
-        const tinygltf::Accessor &accUV = model.accessors[prim.attributes.at("TEXCOORD_0")];
-        const tinygltf::BufferView &bvUV = model.bufferViews[accUV.bufferView];
-        const tinygltf::Buffer &bufUV = model.buffers[bvUV.buffer];
-        uvData = bufUV.data.data() + bvUV.byteOffset + accUV.byteOffset;
+        uvData = resolveAccessor(prim.attributes.at("TEXCOORD_0"), 2 * sizeof(float), uvStride);
+        if (!uvData) uvStride = 0; // UV is optional; fall back gracefully
     }
-    // indices
-    const tinygltf::Accessor &accIdx = model.accessors[prim.indices];
-    const tinygltf::BufferView &bvIdx = model.bufferViews[accIdx.bufferView];
-    const tinygltf::Buffer &bufIdx = model.buffers[bvIdx.buffer];
-    const unsigned char* idxData = bufIdx.data.data() + bvIdx.byteOffset + accIdx.byteOffset;
+
+    size_t idxAccessorStride = 0;
+    const unsigned char* idxData = resolveAccessor(
+        prim.indices, sizeof(unsigned short), idxAccessorStride);
+    if (!idxData) { std::cerr << "gltf: invalid index accessor" << std::endl; return false; }
+
+    const tinygltf::Accessor& accPos = model.accessors[static_cast<size_t>(prim.attributes.at("POSITION"))];
+    const tinygltf::Accessor& accIdx = model.accessors[static_cast<size_t>(prim.indices)];
     size_t idxCount = accIdx.count;
 
-    // interleave pos/norm/uv
+    // interleave pos/norm/uv — use per-element stride for each attribute
     struct Vert { float px,py,pz; float nx,ny,nz; float u,v; };
     std::vector<Vert> verts(accPos.count);
-    const float* pf = (const float*)posData;
-    const float* nf = (const float*)normData;
-    const float* uvf = uvData ? (const float*)uvData : nullptr;
-    for (size_t i=0;i<accPos.count;++i) {
-        verts[i].px = pf[i*3+0]; verts[i].py = pf[i*3+1]; verts[i].pz = pf[i*3+2];
-        verts[i].nx = nf[i*3+0]; verts[i].ny = nf[i*3+1]; verts[i].nz = nf[i*3+2];
-        if (uvf) { verts[i].u = uvf[i*2+0]; verts[i].v = uvf[i*2+1]; } else { verts[i].u = verts[i].v = 0.0f; }
+    for (size_t i = 0; i < accPos.count; ++i) {
+        const auto* pf = reinterpret_cast<const float*>(posData  + i * posStride);
+        const auto* nf = reinterpret_cast<const float*>(normData + i * normStride);
+        verts[i].px = pf[0]; verts[i].py = pf[1]; verts[i].pz = pf[2];
+        verts[i].nx = nf[0]; verts[i].ny = nf[1]; verts[i].nz = nf[2];
+        if (uvData) {
+            const auto* uvf = reinterpret_cast<const float*>(uvData + i * uvStride);
+            verts[i].u = uvf[0]; verts[i].v = uvf[1];
+        } else {
+            verts[i].u = verts[i].v = 0.0f;
+        }
     }
     std::vector<unsigned int> indices(idxCount);
     if (accIdx.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
-        const unsigned short* s = (const unsigned short*)idxData;
-        for (size_t i=0;i<idxCount;++i) indices[i] = s[i];
+        for (size_t i = 0; i < idxCount; ++i)
+            indices[i] = *reinterpret_cast<const unsigned short*>(idxData + i * idxAccessorStride);
     } else if (accIdx.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
-        const unsigned int* u = (const unsigned int*)idxData;
-        for (size_t i=0;i<idxCount;++i) indices[i] = u[i];
+        for (size_t i = 0; i < idxCount; ++i)
+            indices[i] = *reinterpret_cast<const unsigned int*>(idxData + i * idxAccessorStride);
     } else if (accIdx.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
-        const unsigned char* c = (const unsigned char*)idxData;
-        for (size_t i=0;i<idxCount;++i) indices[i] = c[i];
+        for (size_t i = 0; i < idxCount; ++i)
+            indices[i] = *reinterpret_cast<const unsigned char*>(idxData + i * idxAccessorStride);
     }
 
     // create GL buffers

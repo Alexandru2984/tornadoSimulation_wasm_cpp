@@ -64,7 +64,7 @@ if(USING_EMSCRIPTEN)
         "SHELL:-s ENVIRONMENT=web"
         "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets@assets"
         "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/shaders@shaders"
-        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_touch_set_move','_touch_set_look','_touch_set_cursor','_set_quality','_toggle_sound','_set_paused']"
+        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_touch_set_move','_touch_set_look','_touch_set_cursor','_set_quality','_toggle_sound','_set_paused','_restart_game']"
         "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
     )
 
