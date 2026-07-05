@@ -175,6 +175,7 @@ struct DestructibleHouse {
     float health = 1.0f;
     bool destroyed = false;
     int chunkX = 0, chunkZ = 0;  // which chunk owns this
+    int genIdx = 0;              // deterministic index within the chunk
 };
 
 struct Debris {
@@ -202,6 +203,7 @@ struct ChunkTree {
     int chunkX = 0, chunkZ = 0;
     float health = 1.0f;
     bool destroyed = false;
+    int genIdx = 0;
 };
 
 // New destructible objects
@@ -212,6 +214,7 @@ struct ChunkProp {
     bool destroyed = false;
     int propType; // 0=fence, 1=car, 2=pole
     float yaw;    // random rotation
+    int genIdx = 0;
 };
 
 struct ScorchMark {
@@ -388,6 +391,10 @@ struct AppState {
     // Chunk system
     std::vector<ChunkTree> chunkTrees;
     std::unordered_set<ChunkKey, ChunkKeyHash> loadedChunks;
+
+    // Persistent record of destroyed objects so unloading and reloading a
+    // chunk does not resurrect them (see makeObjKey).
+    std::unordered_set<uint64_t> destroyedObjs;
 };
 
 // ── Global state ─────────────────────────────────────────────────────
@@ -448,6 +455,7 @@ extern "C" {
         for (auto& h  : app.houses)      { h.health  = 1.0f; h.destroyed  = false; }
         for (auto& tr : app.chunkTrees)  { tr.health = 1.0f; tr.destroyed = false; }
         for (auto& pr : app.chunkProps)  { pr.health = 1.0f; pr.destroyed = false; }
+        app.destroyedObjs.clear();
         app.debrisPieces.clear();
         app.scorchMarks.clear();
         app.comboCount = 0;
@@ -644,6 +652,15 @@ static float getTerrainHeight(float x, float z) {
     return h;
 }
 
+// Pack (chunk coords, object category, per-chunk index) into a stable key.
+// Categories: 0=house, 1=tree, 2=prop. 16-bit chunk coords cover ±655 km.
+static uint64_t makeObjKey(int cx, int cz, int type, int idx) {
+    return ((uint64_t)(uint16_t)(int16_t)cx << 48) |
+           ((uint64_t)(uint16_t)(int16_t)cz << 32) |
+           ((uint64_t)(uint32_t)type          << 16) |
+           (uint64_t)(uint32_t)(idx & 0xFFFF);
+}
+
 // ── Generate objects for a chunk (deterministic by chunk coords) ─────
 static void generateChunk(int cx, int cz) {
     ChunkKey key{cx, cz};
@@ -671,6 +688,10 @@ static void generateChunk(int cx, int cz) {
         h.destroyed = false;
         h.chunkX = cx;
         h.chunkZ = cz;
+        h.genIdx = i;
+        if (app.destroyedObjs.count(makeObjKey(cx, cz, 0, h.genIdx))) {
+            h.destroyed = true; h.health = 0.0f;
+        }
         app.houses.push_back(h);
     }
     // Trees
@@ -685,6 +706,10 @@ static void generateChunk(int cx, int cz) {
         t.chunkZ = cz;
         t.health = 1.0f;
         t.destroyed = false;
+        t.genIdx = i;
+        if (app.destroyedObjs.count(makeObjKey(cx, cz, 1, t.genIdx))) {
+            t.destroyed = true; t.health = 0.0f;
+        }
         app.chunkTrees.push_back(t);
     }
     // Props: fences, cars, poles
@@ -698,6 +723,10 @@ static void generateChunk(int cx, int cz) {
         p.chunkX = cx; p.chunkZ = cz;
         p.propType = 0; // fence
         p.yaw = r01(cRng) * 6.28f;
+        p.genIdx = i; // fences: 0..99
+        if (app.destroyedObjs.count(makeObjKey(cx, cz, 2, p.genIdx))) {
+            p.destroyed = true; p.health = 0.0f;
+        }
         app.chunkProps.push_back(p);
     }
     for (int i = 0; i < CARS_PER_CHUNK; ++i) {
@@ -710,6 +739,10 @@ static void generateChunk(int cx, int cz) {
         p.chunkX = cx; p.chunkZ = cz;
         p.propType = 1; // car
         p.yaw = r01(cRng) * 6.28f;
+        p.genIdx = 100 + i; // cars: 100..199
+        if (app.destroyedObjs.count(makeObjKey(cx, cz, 2, p.genIdx))) {
+            p.destroyed = true; p.health = 0.0f;
+        }
         app.chunkProps.push_back(p);
     }
     for (int i = 0; i < POLES_PER_CHUNK; ++i) {
@@ -722,6 +755,10 @@ static void generateChunk(int cx, int cz) {
         p.chunkX = cx; p.chunkZ = cz;
         p.propType = 2; // pole
         p.yaw = 0.0f;
+        p.genIdx = 200 + i; // poles: 200..299
+        if (app.destroyedObjs.count(makeObjKey(cx, cz, 2, p.genIdx))) {
+            p.destroyed = true; p.health = 0.0f;
+        }
         app.chunkProps.push_back(p);
     }
 }
@@ -1164,6 +1201,7 @@ static void main_loop() {
             h.health -= DAMAGE_RATE * speedMult * dt;
             if (h.health <= 0.0f) {
                 h.destroyed = true;
+                s.destroyedObjs.insert(makeObjKey(h.chunkX, h.chunkZ, 0, h.genIdx));
                 spawnDebris(h.pos, DEBRIS_PER_HOUSE);
                 s.score.housesDestroyed++;
                 s.score.totalDestroyed++;
@@ -1187,6 +1225,7 @@ static void main_loop() {
             tr.health -= DAMAGE_RATE * 1.5f * speedMult * dt;
             if (tr.health <= 0.0f) {
                 tr.destroyed = true;
+                s.destroyedObjs.insert(makeObjKey(tr.chunkX, tr.chunkZ, 1, tr.genIdx));
                 spawnDebris(tr.pos, DEBRIS_PER_TREE);
                 s.score.treesDestroyed++;
                 s.score.totalDestroyed++;
@@ -1208,6 +1247,7 @@ static void main_loop() {
             pr.health -= rate * speedMult * dt;
             if (pr.health <= 0.0f) {
                 pr.destroyed = true;
+                s.destroyedObjs.insert(makeObjKey(pr.chunkX, pr.chunkZ, 2, pr.genIdx));
                 int debrisCount = (pr.propType == 1) ? 25 : 8;
                 spawnDebris(pr.pos, debrisCount);
                 s.score.propsDestroyed++;
@@ -2182,6 +2222,7 @@ static void main_loop() {
             for (auto& h : s.houses)      { h.health = 1.0f; h.destroyed = false; }
             for (auto& tr : s.chunkTrees) { tr.health = 1.0f; tr.destroyed = false; }
             for (auto& pr : s.chunkProps) { pr.health = 1.0f; pr.destroyed = false; }
+            s.destroyedObjs.clear();
             s.debrisPieces.clear();
             s.scorchMarks.clear();
             s.comboCount = 0;
