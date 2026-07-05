@@ -44,9 +44,7 @@ else()
 endif()
 
 # ── Main executable ───────────────────────────────────────────────────
-add_executable(tornado src/main.cpp src/tinygltf_impl.cpp)
-
-target_include_directories(tornado PRIVATE ${CMAKE_SOURCE_DIR}/vendor)
+add_executable(tornado src/main.cpp)
 
 if(USING_EMSCRIPTEN)
     # --- Emscripten / WebGL 2 build ---
@@ -62,7 +60,6 @@ if(USING_EMSCRIPTEN)
         "SHELL:-s MIN_WEBGL_VERSION=2"
         "SHELL:-s MAX_WEBGL_VERSION=2"
         "SHELL:-s ENVIRONMENT=web"
-        "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets@assets"
         "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/shaders@shaders"
         "SHELL:-s EXPORTED_FUNCTIONS=['_main','_touch_set_move','_touch_set_look','_touch_set_cursor','_set_quality','_toggle_sound','_set_paused','_restart_game','_get_score_points','_get_game_phase']"
         "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
@@ -115,11 +112,6 @@ else()
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/shaders/hud_fragment.glsl
             $<TARGET_FILE_DIR:tornado>/shaders/hud_fragment.glsl
-    )
-    add_custom_command(TARGET tornado POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_SOURCE_DIR}/assets
-            $<TARGET_FILE_DIR:tornado>/assets
     )
 endif()
 

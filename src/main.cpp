@@ -44,8 +44,6 @@
   #define GET_CWD getcwd
 #endif
 
-#include "gltf_loader.h"
-
 // ── Constants ────────────────────────────────────────────────────────
 static const int   MAX_PARTICLES   = 2200;
 static const int   INNER_PARTICLES = 1400;
@@ -307,8 +305,6 @@ struct AppState {
     // Scene models
     SimpleModel house;
     SimpleModel tree;
-    GLTFModel   boxModel;      bool boxLoaded = false;
-    GLTFModel   avocadoModel;  bool avoLoaded = false;
 
     // Textures
     GLuint brickTex = 0, leafTex = 0;
@@ -1771,44 +1767,6 @@ static void main_loop() {
         glUniform1f(mu.opacity, 1.0f);
     }
 
-    // -- glTF models (if loaded) --
-    if (s.boxLoaded) {
-        glUniform1i(mu.objType, 0);
-        glUniform1f(mu.enableSwirl, 0.0f);
-        glUniform1f(mu.opacity, 1.0f);
-        glUniform1i(mu.hasAlbedo, s.boxModel.texture ? 1 : 0);
-        if (s.boxModel.texture) {
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, s.boxModel.texture);
-        }
-        glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 0.5f, 2.0f));
-        glm::mat3 nm = normalMat3(model);
-        glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
-        glUniform3f(mu.tint, 1.0f, 1.0f, 1.0f);
-        glBindVertexArray(s.boxModel.vao);
-        glDrawElements(GL_TRIANGLES, s.boxModel.indexCount, GL_UNSIGNED_INT, nullptr);
-    }
-    if (s.avoLoaded) {
-        glUniform1i(mu.objType, 0);
-        glUniform1f(mu.enableSwirl, 0.0f);
-        glUniform1f(mu.opacity, 1.0f);
-        glUniform1i(mu.hasAlbedo, s.avocadoModel.texture ? 1 : 0);
-        if (s.avocadoModel.texture) {
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, s.avocadoModel.texture);
-        }
-        glm::mat4 model = glm::scale(
-            glm::translate(glm::mat4(1.0f), glm::vec3(-3.0f, 0.5f, 3.0f)),
-            glm::vec3(30.0f));
-        glm::mat3 nm = normalMat3(model);
-        glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
-        glUniform3f(mu.tint, 1.0f, 1.0f, 1.0f);
-        glBindVertexArray(s.avocadoModel.vao);
-        glDrawElements(GL_TRIANGLES, s.avocadoModel.indexCount, GL_UNSIGNED_INT, nullptr);
-    }
-
     // -- Tornado path trail (ghost cones) --
     if (!s.tornadoTrail.empty()) {
         int trailLen = (int)s.tornadoTrail.size();
@@ -3236,20 +3194,6 @@ int main() {
     }
 
     // ══════════════════════════════════════
-    // glTF models (optional)
-    // ══════════════════════════════════════
-    {
-        std::string boxP = "assets/models/BoxTextured.gltf";
-        std::string avoP = "assets/models/Avocado.gltf";
-        if (loadSimpleGLTF(boxP, app.boxModel))            app.boxLoaded = true;
-        else if (loadSimpleGLTF("../"+boxP, app.boxModel)) app.boxLoaded = true;
-        if (loadSimpleGLTF(avoP, app.avocadoModel))            app.avoLoaded = true;
-        else if (loadSimpleGLTF("../"+avoP, app.avocadoModel)) app.avoLoaded = true;
-        if (app.boxLoaded) std::cout << "Loaded glTF: " << boxP << std::endl;
-        if (app.avoLoaded) std::cout << "Loaded glTF: " << avoP << std::endl;
-    }
-
-    // ══════════════════════════════════════
     // Particles
     // ══════════════════════════════════════
     app.particles.resize(MAX_PARTICLES);
@@ -3319,9 +3263,6 @@ int main() {
     if (app.fence.vao) { glDeleteBuffers(1,&app.fence.vbo); glDeleteBuffers(1,&app.fence.ebo); glDeleteVertexArrays(1,&app.fence.vao); }
     if (app.car.vao) { glDeleteBuffers(1,&app.car.vbo); glDeleteBuffers(1,&app.car.ebo); glDeleteVertexArrays(1,&app.car.vao); }
     if (app.pole.vao) { glDeleteBuffers(1,&app.pole.vbo); glDeleteBuffers(1,&app.pole.ebo); glDeleteVertexArrays(1,&app.pole.vao); }
-    // glTF models
-    if (app.boxModel.vao)  { glDeleteBuffers(1,&app.boxModel.vbo); glDeleteBuffers(1,&app.boxModel.ebo); glDeleteVertexArrays(1,&app.boxModel.vao); if (app.boxModel.texture) glDeleteTextures(1,&app.boxModel.texture); }
-    if (app.avocadoModel.vao) { glDeleteBuffers(1,&app.avocadoModel.vbo); glDeleteBuffers(1,&app.avocadoModel.ebo); glDeleteVertexArrays(1,&app.avocadoModel.vao); if (app.avocadoModel.texture) glDeleteTextures(1,&app.avocadoModel.texture); }
     glDeleteProgram(app.particleProgram);
     glDeleteProgram(app.skyProgram);
     glDeleteProgram(app.rainProgram);
