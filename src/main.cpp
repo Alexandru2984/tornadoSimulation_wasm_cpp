@@ -923,22 +923,22 @@ static void initSound() {
 }
 static void playDestroySound() {
 #ifdef PLATFORM_EMSCRIPTEN
-    js_playDestroySound();
+    if (!g_soundMuted) js_playDestroySound();
 #endif
 }
 static void playPowerUpSound() {
 #ifdef PLATFORM_EMSCRIPTEN
-    js_playPowerUpSound();
+    if (!g_soundMuted) js_playPowerUpSound();
 #endif
 }
 static void playWaveSound() {
 #ifdef PLATFORM_EMSCRIPTEN
-    js_playWaveSound();
+    if (!g_soundMuted) js_playWaveSound();
 #endif
 }
 static void playThunderSound() {
 #ifdef PLATFORM_EMSCRIPTEN
-    js_playThunderSound();
+    if (!g_soundMuted) js_playThunderSound();
 #endif
 }
 static void updateWindVolume(float tornadoScale) {
@@ -948,7 +948,7 @@ static void updateWindVolume(float tornadoScale) {
 }
 static void playVictorySound() {
 #ifdef PLATFORM_EMSCRIPTEN
-    js_playVictorySound();
+    if (!g_soundMuted) js_playVictorySound();
 #endif
 }
 static void saveScore(int score, int wave) {
