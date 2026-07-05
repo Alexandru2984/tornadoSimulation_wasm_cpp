@@ -125,8 +125,9 @@ static const float MINIMAP_RADIUS        = 60.0f;   // world-space range
 static const float MINIMAP_NDC_SIZE      = 0.22f;   // screen fraction
 
 // Terrain heightmap
-static const int   TERRAIN_GRID          = 128;      // cells per axis
+static const int   TERRAIN_GRID          = 160;      // cells per axis
 static const float TERRAIN_EXTENT        = 200.0f;   // half-size in world units
+static const float TERRAIN_RECENTER_DIST = 60.0f;    // rebuild grid when camera strays this far
 static const float WATER_LEVEL           = 0.3f;     // Y where water surface sits
 
 // Day/night cycle
@@ -294,6 +295,7 @@ struct AppState {
     // Ground / terrain
     GLuint groundVAO = 0, groundVBO = 0, groundEBO = 0;
     GLsizei terrainIndexCount = 0;  // replaces hardcoded 6
+    glm::vec2 terrainCenter{0.0f, 0.0f}; // world XZ the grid is centred on
 
     // Water
     GLuint waterVAO = 0, waterVBO = 0, waterEBO = 0;
@@ -664,6 +666,58 @@ static float getTerrainHeight(float x, float z) {
     return h;
 }
 
+// Shared vertex layout for terrain-style meshes
+struct SceneVert { glm::vec3 pos; glm::vec3 normal; glm::vec3 col; };
+
+// (Re)build the terrain vertex grid centred on (centerX, centerZ) and upload
+// it into the existing VBO. Called once at startup and again whenever the
+// camera strays far from the current centre — the ground follows the player,
+// making the world effectively infinite.
+static void buildTerrainMesh(float centerX, float centerZ) {
+    const int GN = TERRAIN_GRID + 1; // vertices per axis
+    static std::vector<SceneVert> gv; // persistent to avoid realloc on rebuilds
+    gv.resize((size_t)GN * GN);
+    float step = (TERRAIN_EXTENT * 2.0f) / TERRAIN_GRID;
+
+    for (int iz = 0; iz < GN; ++iz) {
+        for (int ix = 0; ix < GN; ++ix) {
+            float x = centerX - TERRAIN_EXTENT + ix * step;
+            float z = centerZ - TERRAIN_EXTENT + iz * step;
+            float y = getTerrainHeight(x, z);
+            // Color based on height
+            glm::vec3 col;
+            if (y < WATER_LEVEL + 0.05f) {
+                col = glm::vec3(0.55f, 0.50f, 0.38f); // sand/beach
+            } else if (y < 2.0f) {
+                col = glm::vec3(0.15f, 0.45f, 0.2f);  // grass
+            } else if (y < 4.0f) {
+                float t2 = (y - 2.0f) / 2.0f;
+                col = glm::mix(glm::vec3(0.15f,0.45f,0.2f), glm::vec3(0.4f,0.35f,0.28f), t2); // grass→rock
+            } else {
+                float t2 = glm::clamp((y - 4.0f) / 2.0f, 0.0f, 1.0f);
+                col = glm::mix(glm::vec3(0.4f,0.35f,0.28f), glm::vec3(0.85f,0.85f,0.9f), t2); // rock→snow
+            }
+            gv[iz * GN + ix] = {glm::vec3(x, y, z), glm::vec3(0,1,0), col};
+        }
+    }
+    // Compute normals from adjacent heights
+    for (int iz = 0; iz < GN; ++iz) {
+        for (int ix = 0; ix < GN; ++ix) {
+            float hL = (ix > 0)    ? gv[iz*GN + ix-1].pos.y : gv[iz*GN+ix].pos.y;
+            float hR = (ix < GN-1) ? gv[iz*GN + ix+1].pos.y : gv[iz*GN+ix].pos.y;
+            float hD = (iz > 0)    ? gv[(iz-1)*GN + ix].pos.y : gv[iz*GN+ix].pos.y;
+            float hU = (iz < GN-1) ? gv[(iz+1)*GN + ix].pos.y : gv[iz*GN+ix].pos.y;
+            gv[iz * GN + ix].normal = glm::normalize(glm::vec3(hL - hR, 2.0f * step, hD - hU));
+        }
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, app.groundVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0,
+                    (GLsizeiptr)(gv.size() * sizeof(SceneVert)), gv.data());
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    app.terrainCenter = glm::vec2(centerX, centerZ);
+}
+
 // Pack (chunk coords, object category, per-chunk index) into a stable key.
 // Categories: 0=house, 1=tree, 2=prop. 16-bit chunk coords cover ±655 km.
 static uint64_t makeObjKey(int cx, int cz, int type, int idx) {
@@ -695,7 +749,7 @@ static void generateChunk(int cx, int cz) {
         float py = getTerrainHeight(px, pz);
         if (py < WATER_LEVEL + 0.2f) continue; // skip water areas
         DestructibleHouse h;
-        h.pos = glm::vec3(px, py, pz);
+        h.pos = glm::vec3(px, py - 0.08f, pz); // slight embed so slopes don't leave gaps
         h.health = 1.0f;
         h.destroyed = false;
         h.chunkX = cx;
@@ -713,7 +767,7 @@ static void generateChunk(int cx, int cz) {
         float py = getTerrainHeight(px, pz);
         if (py < WATER_LEVEL + 0.1f) continue; // skip water areas
         ChunkTree t;
-        t.pos = glm::vec3(px, py, pz);
+        t.pos = glm::vec3(px, py - 0.05f, pz);
         t.chunkX = cx;
         t.chunkZ = cz;
         t.health = 1.0f;
@@ -731,7 +785,7 @@ static void generateChunk(int cx, int cz) {
         float py = getTerrainHeight(px, pz);
         if (py < WATER_LEVEL + 0.15f) continue;
         ChunkProp p;
-        p.pos = glm::vec3(px, py, pz);
+        p.pos = glm::vec3(px, py - 0.04f, pz);
         p.chunkX = cx; p.chunkZ = cz;
         p.propType = 0; // fence
         p.yaw = r01(cRng) * 6.28f;
@@ -747,7 +801,7 @@ static void generateChunk(int cx, int cz) {
         float py = getTerrainHeight(px, pz);
         if (py < WATER_LEVEL + 0.15f) continue;
         ChunkProp p;
-        p.pos = glm::vec3(px, py, pz);
+        p.pos = glm::vec3(px, py - 0.04f, pz);
         p.chunkX = cx; p.chunkZ = cz;
         p.propType = 1; // car
         p.yaw = r01(cRng) * 6.28f;
@@ -763,7 +817,7 @@ static void generateChunk(int cx, int cz) {
         float py = getTerrainHeight(px, pz);
         if (py < WATER_LEVEL + 0.1f) continue;
         ChunkProp p;
-        p.pos = glm::vec3(px, py, pz);
+        p.pos = glm::vec3(px, py - 0.04f, pz);
         p.chunkX = cx; p.chunkZ = cz;
         p.propType = 2; // pole
         p.yaw = 0.0f;
@@ -1063,6 +1117,14 @@ static void main_loop() {
 
     // -- Update chunks around player --
     updateChunks(s.camera.pos);
+
+    // -- Re-centre the terrain grid when the camera strays far from it --
+    if (fabsf(s.camera.pos.x - s.terrainCenter.x) > TERRAIN_RECENTER_DIST ||
+        fabsf(s.camera.pos.z - s.terrainCenter.y) > TERRAIN_RECENTER_DIST) {
+        float cx = floorf(s.camera.pos.x / CHUNK_SIZE + 0.5f) * CHUNK_SIZE;
+        float cz = floorf(s.camera.pos.z / CHUNK_SIZE + 0.5f) * CHUNK_SIZE;
+        buildTerrainMesh(cx, cz);
+    }
 
     // -- Day/night cycle --
     s.dayTime += DAY_CYCLE_SPEED * dt;
@@ -1535,11 +1597,12 @@ static void main_loop() {
         glDrawElements(GL_TRIANGLES, s.terrainIndexCount, GL_UNSIGNED_INT, nullptr);
     }
 
-    // -- Water plane --
+    // -- Water plane (follows the terrain grid so it is also infinite) --
     {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glm::mat4 model(1.0f);
+        glm::mat4 model = glm::translate(glm::mat4(1.0f),
+                              glm::vec3(s.terrainCenter.x, 0.0f, s.terrainCenter.y));
         glm::mat3 nm = normalMat3(model);
         glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
         glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
@@ -2789,45 +2852,8 @@ int main() {
     // Terrain heightmap grid
     // ══════════════════════════════════════
     {
-        struct SV { glm::vec3 pos; glm::vec3 normal; glm::vec3 col; };
         const int GN = TERRAIN_GRID + 1; // vertices per axis
-        std::vector<SV> gv(GN * GN);
-        float step = (TERRAIN_EXTENT * 2.0f) / TERRAIN_GRID;
-
-        // Generate heights
-        for (int iz = 0; iz < GN; ++iz) {
-            for (int ix = 0; ix < GN; ++ix) {
-                float x = -TERRAIN_EXTENT + ix * step;
-                float z = -TERRAIN_EXTENT + iz * step;
-                float y = getTerrainHeight(x, z);
-                // Color based on height
-                glm::vec3 col;
-                if (y < WATER_LEVEL + 0.05f) {
-                    col = glm::vec3(0.55f, 0.50f, 0.38f); // sand/beach
-                } else if (y < 2.0f) {
-                    col = glm::vec3(0.15f, 0.45f, 0.2f);  // grass
-                } else if (y < 4.0f) {
-                    float t2 = (y - 2.0f) / 2.0f;
-                    col = glm::mix(glm::vec3(0.15f,0.45f,0.2f), glm::vec3(0.4f,0.35f,0.28f), t2); // grass→rock
-                } else {
-                    float t2 = glm::clamp((y - 4.0f) / 2.0f, 0.0f, 1.0f);
-                    col = glm::mix(glm::vec3(0.4f,0.35f,0.28f), glm::vec3(0.85f,0.85f,0.9f), t2); // rock→snow
-                }
-                gv[iz * GN + ix] = {glm::vec3(x, y, z), glm::vec3(0,1,0), col};
-            }
-        }
-        // Compute normals from adjacent heights
-        for (int iz = 0; iz < GN; ++iz) {
-            for (int ix = 0; ix < GN; ++ix) {
-                float hL = (ix > 0)    ? gv[iz*GN + ix-1].pos.y : gv[iz*GN+ix].pos.y;
-                float hR = (ix < GN-1) ? gv[iz*GN + ix+1].pos.y : gv[iz*GN+ix].pos.y;
-                float hD = (iz > 0)    ? gv[(iz-1)*GN + ix].pos.y : gv[iz*GN+ix].pos.y;
-                float hU = (iz < GN-1) ? gv[(iz+1)*GN + ix].pos.y : gv[iz*GN+ix].pos.y;
-                glm::vec3 n = glm::normalize(glm::vec3(hL - hR, 2.0f * step, hD - hU));
-                gv[iz * GN + ix].normal = n;
-            }
-        }
-        // Generate indices
+        // Static topology; vertex data is filled in by buildTerrainMesh()
         std::vector<unsigned int> gi;
         gi.reserve(TERRAIN_GRID * TERRAIN_GRID * 6);
         for (int iz = 0; iz < TERRAIN_GRID; ++iz) {
@@ -2847,16 +2873,19 @@ int main() {
         glGenBuffers(1, &app.groundEBO);
         glBindVertexArray(app.groundVAO);
         glBindBuffer(GL_ARRAY_BUFFER, app.groundVBO);
-        glBufferData(GL_ARRAY_BUFFER, gv.size()*sizeof(SV), gv.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)((size_t)GN * GN * sizeof(SceneVert)),
+                     nullptr, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app.groundEBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, gi.size()*sizeof(unsigned int), gi.data(), GL_STATIC_DRAW);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(SV),(void*)offsetof(SV,pos));
+        glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(SceneVert),(void*)offsetof(SceneVert,pos));
         glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(SV),(void*)offsetof(SV,normal));
+        glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(SceneVert),(void*)offsetof(SceneVert,normal));
         glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2,3,GL_FLOAT,GL_FALSE,sizeof(SV),(void*)offsetof(SV,col));
+        glVertexAttribPointer(2,3,GL_FLOAT,GL_FALSE,sizeof(SceneVert),(void*)offsetof(SceneVert,col));
         glBindVertexArray(0);
+
+        buildTerrainMesh(0.0f, 0.0f);
     }
 
     // ══════════════════════════════════════
