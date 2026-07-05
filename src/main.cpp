@@ -1086,13 +1086,16 @@ static void main_loop() {
             // Spawn near player but not too close
             float angle = s.rnd01(s.rng) * 6.28f;
             float dist  = 15.0f + s.rnd01(s.rng) * 25.0f;
-            PowerUp pu;
-            pu.pos = glm::vec3(s.camera.pos.x + cosf(angle) * dist,
-                               0.5f,
-                               s.camera.pos.z + sinf(angle) * dist);
-            pu.type = (PowerUpType)((int)(s.rnd01(s.rng) * 4.0f) % 4);
-            pu.spawnTime = t;
-            s.powerUps.push_back(pu);
+            float px = s.camera.pos.x + cosf(angle) * dist;
+            float pz = s.camera.pos.z + sinf(angle) * dist;
+            float py = getTerrainHeight(px, pz);
+            if (py > WATER_LEVEL) { // don't drop power-ups into lakes
+                PowerUp pu;
+                pu.pos = glm::vec3(px, py, pz);
+                pu.type = (PowerUpType)((int)(s.rnd01(s.rng) * 4.0f) % 4);
+                pu.spawnTime = t;
+                s.powerUps.push_back(pu);
+            }
         }
     }
 
@@ -1104,10 +1107,21 @@ static void main_loop() {
         float collectR = POWERUP_COLLECT_RADIUS * s.tornadoScale;
         if (hasMagnet) collectR *= 3.0f;
         if (dist < collectR) {
-            ActivePowerUp ap;
-            ap.type = it->type;
-            ap.remaining = POWERUP_DURATION;
-            s.activePowerUps.push_back(ap);
+            // Same type already active: refresh its timer instead of stacking
+            bool refreshed = false;
+            for (auto& ap : s.activePowerUps) {
+                if (ap.type == it->type) {
+                    ap.remaining = POWERUP_DURATION;
+                    refreshed = true;
+                    break;
+                }
+            }
+            if (!refreshed) {
+                ActivePowerUp ap;
+                ap.type = it->type;
+                ap.remaining = POWERUP_DURATION;
+                s.activePowerUps.push_back(ap);
+            }
             playPowerUpSound();
             it = s.powerUps.erase(it);
         } else {
@@ -1116,6 +1130,7 @@ static void main_loop() {
                 glm::vec2 dir = glm::normalize(s.tornadoPos - glm::vec2(it->pos.x, it->pos.z));
                 it->pos.x += dir.x * 8.0f * dt;
                 it->pos.z += dir.y * 8.0f * dt;
+                it->pos.y = getTerrainHeight(it->pos.x, it->pos.z);
             }
             ++it;
         }
@@ -1153,8 +1168,9 @@ static void main_loop() {
                 destroyedSomething = true;
                 newPoints += 100.0f;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ, TORNADO_MAX_SCALE);
-                if ((int)s.scorchMarks.size() < MAX_SCORCH_MARKS)
-                    s.scorchMarks.push_back({h.pos, 1.5f});
+                if ((int)s.scorchMarks.size() >= MAX_SCORCH_MARKS)
+                    s.scorchMarks.erase(s.scorchMarks.begin());
+                s.scorchMarks.push_back({h.pos, 1.5f});
             }
         }
     }
@@ -1237,9 +1253,10 @@ static void main_loop() {
     s.scorchTimer += dt;
     if (s.scorchTimer > 0.15f) {
         s.scorchTimer = 0.0f;
-        if ((int)s.scorchMarks.size() < MAX_SCORCH_MARKS)
-            s.scorchMarks.push_back({glm::vec3(s.tornadoPos.x, 0.01f, s.tornadoPos.y),
-                                      0.8f * s.tornadoScale});
+        if ((int)s.scorchMarks.size() >= MAX_SCORCH_MARKS)
+            s.scorchMarks.erase(s.scorchMarks.begin());
+        s.scorchMarks.push_back({glm::vec3(s.tornadoPos.x, 0.01f, s.tornadoPos.y),
+                                  0.8f * s.tornadoScale});
     }
 
     // ── Tornado trail sampling ──
@@ -1299,7 +1316,11 @@ static void main_loop() {
         r.pos.y -= RAIN_SPEED * dt;
         r.pos.x += windDir.x * dt * 3.0f + (s.rnd01(s.rng) - 0.5f) * 0.02f;
         r.pos.z += windDir.y * dt * 3.0f;
-        if (r.pos.y < 0.0f) respawnRain(r, s.camera.pos);
+        // Terrain rises up to ~7.5 — only pay the noise cost for low drops
+        if (r.pos.y < 8.5f) {
+            float floorY = std::max(getTerrainHeight(r.pos.x, r.pos.z), WATER_LEVEL);
+            if (r.pos.y < floorY) respawnRain(r, s.camera.pos);
+        }
     }
 
     // -- Camera: mouse-look (RMB) --
@@ -1546,7 +1567,7 @@ static void main_loop() {
             float bob = sinf(t * POWERUP_BOB_SPEED + pu.spawnTime * 3.0f) * POWERUP_BOB_HEIGHT;
             float spin = t * 2.0f + pu.spawnTime;
             glm::mat4 model = glm::translate(glm::mat4(1.0f),
-                                  glm::vec3(pu.pos.x, 0.8f + bob, pu.pos.z));
+                                  glm::vec3(pu.pos.x, pu.pos.y + 0.8f + bob, pu.pos.z));
             model = glm::rotate(model, spin, glm::vec3(0, 1, 0));
             model = glm::scale(model, glm::vec3(0.35f));
             glm::mat3 nm = normalMat3(model);
