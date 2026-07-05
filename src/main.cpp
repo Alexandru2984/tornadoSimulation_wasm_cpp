@@ -328,6 +328,9 @@ struct AppState {
     float comboTimer      = 0.0f;
     float comboMultiplier = 1.0f;
 
+    // Camera shake (impact feedback)
+    float shakeAmp = 0.0f;
+
     // Tornado path trail (world XZ positions)
     std::deque<glm::vec2> tornadoTrail;
     float trailSampleTimer = 0.0f;
@@ -1313,6 +1316,7 @@ static void main_loop() {
     if (destroyedSomething) {
         s.lastDestroyTime = t;
         playDestroySound();
+        s.shakeAmp = std::min(s.shakeAmp + 0.05f + 0.03f * s.tornadoScale, 0.3f);
         // Combo: increment, apply multiplier, reset timer
         s.comboCount++;
         s.comboTimer      = 2.5f;
@@ -1394,6 +1398,7 @@ static void main_loop() {
         s.lightning.nextFlash = LIGHTNING_MIN_INTERVAL +
             s.rnd01(s.rng) * (LIGHTNING_MAX_INTERVAL - LIGHTNING_MIN_INTERVAL);
         playThunderSound();
+        s.shakeAmp = std::min(s.shakeAmp + 0.04f, 0.3f);
     }
     s.lightning.intensity *= expf(-LIGHTNING_DECAY * dt);
     if (s.lightning.intensity < 0.01f) s.lightning.intensity = 0.0f;
@@ -1486,6 +1491,14 @@ static void main_loop() {
     float aspect = (float)width / (float)height;
     glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 200.0f);
     glm::mat4 view = s.camera.getView();
+
+    // Camera shake: jitter in view space, decaying exponentially
+    s.shakeAmp *= expf(-5.0f * dt);
+    if (s.shakeAmp > 0.003f) {
+        glm::vec3 jitter((s.rnd01(s.rng) - 0.5f) * s.shakeAmp,
+                         (s.rnd01(s.rng) - 0.5f) * s.shakeAmp, 0.0f);
+        view = glm::translate(glm::mat4(1.0f), jitter) * view;
+    }
 
     // -- Helper: compute normal matrix from model matrix --
     auto normalMat3 = [](const glm::mat4& model) -> glm::mat3 {
