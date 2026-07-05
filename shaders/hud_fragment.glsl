@@ -1,16 +1,15 @@
 #version 330 core
 in vec2 vUV;
+in vec4 vColor;
+in float vMode;
 out vec4 FragColor;
 uniform sampler2D uFontTex;
-uniform vec3 uColor;
-uniform float uAlpha; // <0: use font texture alpha; >=0: solid fill with this alpha
 void main() {
-    float a;
-    if (uAlpha >= 0.0) {
-        a = uAlpha;
-    } else {
-        a = texture(uFontTex, vUV).r;
-        if (a < 0.3) discard;
+    float a = vColor.a;
+    if (vMode > 0.5) {
+        float t = texture(uFontTex, vUV).r;
+        if (t < 0.3) discard;
+        a *= t;
     }
-    FragColor = vec4(uColor, a);
+    FragColor = vec4(vColor.rgb, a);
 }

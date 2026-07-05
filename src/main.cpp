@@ -150,7 +150,7 @@ struct RainUniforms {
     GLint proj=-1, view=-1;
 };
 struct HudUniforms {
-    GLint fontTex=-1, color=-1, alpha=-1;
+    GLint fontTex=-1;
 };
 
 // ── Structs ──────────────────────────────────────────────────────────
@@ -369,6 +369,8 @@ struct AppState {
     GLuint hudProgram = 0;
     GLuint fontTex = 0;
     GLuint hudVAO = 0, hudVBO = 0;
+    std::vector<float> hudBuf;    // batched HUD vertices for one draw call
+    size_t hudVBOCapacity = 0;    // current VBO size in bytes
 
     // Props (fences, cars, poles)
     std::vector<ChunkProp> chunkProps;
@@ -1980,17 +1982,19 @@ static void main_loop() {
         glDisable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glUseProgram(s.hudProgram);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, s.fontTex);
-        glUniform1i(s.hu.fontTex, 0);
 
-        // Render function: each char is a textured quad (font atlas mode)
+        // All HUD elements are appended into one vertex buffer and drawn with
+        // a single call at the end of this block (order = append order).
+        auto& hb = s.hudBuf;
+        hb.clear();
+        auto pushVert = [&](float x, float y, float u, float v,
+                            const glm::vec3& c, float a, float mode) {
+            hb.insert(hb.end(), {x, y, u, v, c.x, c.y, c.z, a, mode});
+        };
+
+        // Append a text line: each char is a textured quad (font atlas mode)
         auto renderLine = [&](const char* text, float startX, float startY,
                               float charW, float charH, glm::vec3 color) {
-            glUniform1f(s.hu.alpha, -1.0f); // font texture mode
-            glUniform3fv(s.hu.color, 1, glm::value_ptr(color));
-            std::vector<float> verts;
             float cx = startX;
             int _rlCount = 0;
             for (const char* c = text; *c && _rlCount < 256; ++c, ++_rlCount) {
@@ -2002,34 +2006,28 @@ static void main_loop() {
                 float v0 = row / 6.0f,  v1 = (row+1) / 6.0f;
                 float x0 = cx, x1 = cx + charW;
                 float y0 = startY, y1 = startY + charH;
-                verts.insert(verts.end(), {x0,y0, u0,v1, x1,y0, u1,v1, x1,y1, u1,v0,
-                                            x0,y0, u0,v1, x1,y1, u1,v0, x0,y1, u0,v0});
+                pushVert(x0,y0,u0,v1,color,1.0f,1.0f);
+                pushVert(x1,y0,u1,v1,color,1.0f,1.0f);
+                pushVert(x1,y1,u1,v0,color,1.0f,1.0f);
+                pushVert(x0,y0,u0,v1,color,1.0f,1.0f);
+                pushVert(x1,y1,u1,v0,color,1.0f,1.0f);
+                pushVert(x0,y1,u0,v0,color,1.0f,1.0f);
                 cx += charW;
             }
-            glBindVertexArray(s.hudVAO);
-            glBindBuffer(GL_ARRAY_BUFFER, s.hudVBO);
-            glBufferSubData(GL_ARRAY_BUFFER, 0,
-                            (GLsizeiptr)(verts.size()*sizeof(float)), verts.data());
-            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(verts.size()/4));
         };
 
-        // Helper: render a filled quad with explicit alpha (solid, no texture)
+        // Append a filled quad with explicit alpha (solid, no texture)
         auto renderQuadA = [&](float x0, float y0, float x1, float y1,
                                 glm::vec3 color, float alpha) {
-            glUniform1f(s.hu.alpha, alpha);
-            glUniform3fv(s.hu.color, 1, glm::value_ptr(color));
-            float u = 0.0f;
-            float verts[] = {
-                x0,y0, u,u, x1,y0, u,u, x1,y1, u,u,
-                x0,y0, u,u, x1,y1, u,u, x0,y1, u,u
-            };
-            glBindVertexArray(s.hudVAO);
-            glBindBuffer(GL_ARRAY_BUFFER, s.hudVBO);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
+            pushVert(x0,y0,0,0,color,alpha,0.0f);
+            pushVert(x1,y0,0,0,color,alpha,0.0f);
+            pushVert(x1,y1,0,0,color,alpha,0.0f);
+            pushVert(x0,y0,0,0,color,alpha,0.0f);
+            pushVert(x1,y1,0,0,color,alpha,0.0f);
+            pushVert(x0,y1,0,0,color,alpha,0.0f);
         };
 
-        // Helper: render a fully opaque filled quad
+        // Append a fully opaque filled quad
         auto renderQuad = [&](float x0, float y0, float x1, float y1, glm::vec3 color) {
             renderQuadA(x0, y0, x1, y1, color, 1.0f);
         };
@@ -2379,6 +2377,25 @@ static void main_loop() {
                         glm::vec3(0.9f, 0.95f, 1.0f), flashAlpha);
         }
 
+        // ── Upload the whole HUD once and draw it in a single call ──
+        if (!hb.empty()) {
+            glUseProgram(s.hudProgram);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, s.fontTex);
+            glUniform1i(s.hu.fontTex, 0);
+            glBindVertexArray(s.hudVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, s.hudVBO);
+            size_t bytes = hb.size() * sizeof(float);
+            if (bytes > s.hudVBOCapacity) {
+                s.hudVBOCapacity = bytes * 2;
+                glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)s.hudVBOCapacity,
+                             nullptr, GL_STREAM_DRAW);
+            }
+            glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes, hb.data());
+            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(hb.size() / 9));
+            glBindVertexArray(0);
+        }
+
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
     }
@@ -2596,8 +2613,6 @@ int main() {
     {
         GLuint p = app.hudProgram;
         app.hu.fontTex = glGetUniformLocation(p, "uFontTex");
-        app.hu.color   = glGetUniformLocation(p, "uColor");
-        app.hu.alpha   = glGetUniformLocation(p, "uAlpha");
     }
 
     // ══════════════════════════════════════
@@ -2763,12 +2778,18 @@ int main() {
         glGenBuffers(1, &app.hudVBO);
         glBindVertexArray(app.hudVAO);
         glBindBuffer(GL_ARRAY_BUFFER, app.hudVBO);
-        glBufferData(GL_ARRAY_BUFFER, 256 * 6 * 4 * sizeof(float), nullptr, GL_STREAM_DRAW);
-        // layout: vec2 pos, vec2 uv per vertex
+        app.hudVBOCapacity = 4096 * 9 * sizeof(float);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)app.hudVBOCapacity, nullptr, GL_STREAM_DRAW);
+        // layout: vec2 pos, vec2 uv, vec4 color, float mode per vertex
+        const GLsizei stride = 9 * sizeof(float);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void*)0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, (void*)0);
         glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void*)(2*sizeof(float)));
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, (void*)(2*sizeof(float)));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride, (void*)(4*sizeof(float)));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, stride, (void*)(8*sizeof(float)));
         glBindVertexArray(0);
     }
 
