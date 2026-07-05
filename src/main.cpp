@@ -638,6 +638,9 @@ static float getTerrainHeight(float x, float z) {
     float dist = sqrtf(x * x + z * z);
     float flatFactor = glm::smoothstep(8.0f, 50.0f, dist);
     h *= flatFactor;
+    // Raise the flattened start plateau above the water level so the
+    // spawn area is dry land and destructible objects spawn nearby
+    h += (1.0f - flatFactor) * 1.2f;
     return h;
 }
 
