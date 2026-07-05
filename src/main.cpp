@@ -2039,17 +2039,17 @@ static void main_loop() {
 
         // ── Top-left: score info ──
         char buf[64];
-        snprintf(buf, sizeof(buf), "SCORE: %d", s.score.scorePoints);
+        snprintf(buf, sizeof(buf), "SCOR: %d", s.score.scorePoints);
         renderLine(buf, -0.98f, 0.92f, cw, ch, glm::vec3(1.0f, 0.85f, 0.0f));
 
-        snprintf(buf, sizeof(buf), "DESTROYED: %d", s.score.totalDestroyed);
+        snprintf(buf, sizeof(buf), "DISTRUSE: %d", s.score.totalDestroyed);
         renderLine(buf, -0.98f, 0.86f, scw, sch, glm::vec3(1.0f, 0.9f, 0.3f));
 
-        snprintf(buf, sizeof(buf), "H:%d T:%d P:%d",
+        snprintf(buf, sizeof(buf), "CASE:%d COPACI:%d ALTE:%d",
                  s.score.housesDestroyed, s.score.treesDestroyed, s.score.propsDestroyed);
         renderLine(buf, -0.98f, 0.81f, scw * 0.85f, sch * 0.85f, glm::vec3(0.8f, 0.8f, 0.8f));
 
-        snprintf(buf, sizeof(buf), "TORNADO x%.1f", s.tornadoScale);
+        snprintf(buf, sizeof(buf), "TORNADA x%.1f", s.tornadoScale);
         renderLine(buf, -0.98f, 0.76f, scw * 0.85f, sch * 0.85f, glm::vec3(1.0f, 0.5f, 0.3f));
 
         // ── Combo multiplier display ──
@@ -2061,7 +2061,7 @@ static void main_loop() {
         }
 
         // ── Top-right: wave info ──
-        snprintf(buf, sizeof(buf), "WAVE %d/%d  EF%d",
+        snprintf(buf, sizeof(buf), "VAL %d/%d  EF%d",
                  s.wave.number, TOTAL_WAVES, s.wave.efScale);
         renderLine(buf, 0.52f, 0.92f, cw, ch, glm::vec3(0.5f, 0.9f, 1.0f));
 
@@ -2117,18 +2117,18 @@ static void main_loop() {
             float outerR = 0.07f;
             float dotS2 = 0.006f;
 
-            // Circle outline (12 dots)
+            // Circle outline (12 dots) — x compressed by aspect so it stays round
             for (int i = 0; i < 12; ++i) {
                 float a = (float)i * (float)M_PI / 6.0f;
-                float dx = outerR * sinf(a), dy = outerR * cosf(a);
-                renderQuadA(cX+dx-dotS2, cY+dy-dotS2, cX+dx+dotS2, cY+dy+dotS2,
+                float dx = outerR * sinf(a) / aspect, dy = outerR * cosf(a);
+                renderQuadA(cX+dx-dotS2/aspect, cY+dy-dotS2, cX+dx+dotS2/aspect, cY+dy+dotS2,
                             glm::vec3(0.4f, 0.5f, 0.6f), 0.6f);
             }
             // Tornado indicator dot
             float iR = outerR * 0.8f;
-            float idx = iR * sinf(bearing), idy = iR * cosf(bearing);
+            float idx = iR * sinf(bearing) / aspect, idy = iR * cosf(bearing);
             float bigS = 0.013f;
-            renderQuad(cX+idx-bigS, cY+idy-bigS, cX+idx+bigS, cY+idy+bigS,
+            renderQuad(cX+idx-bigS/aspect, cY+idy-bigS, cX+idx+bigS/aspect, cY+idy+bigS,
                        glm::vec3(1.0f, 0.4f, 0.1f));
             // Distance text
             snprintf(buf, sizeof(buf), "%.0fm", dist3d);
@@ -2137,38 +2137,44 @@ static void main_loop() {
                        scw * 0.7f, sch * 0.7f, glm::vec3(0.9f, 0.7f, 0.5f));
         }
 
-        // ── Minimap (bottom-right corner) ──
+        // ── Minimap (bottom-right corner, square on screen) ──
         {
-            float mmX = 0.72f;  // center X in NDC
-            float mmY = -0.72f; // center Y in NDC
-            float mmR = MINIMAP_NDC_SIZE;
+            float mmR  = MINIMAP_NDC_SIZE;         // half-height in NDC
+            float mmRx = mmR / aspect;             // half-width, aspect-corrected
+            float mmX  = 1.0f - 0.05f - mmRx;      // center X in NDC
+            float mmY  = -0.72f;                   // center Y in NDC
 
             // Background
-            renderQuad(mmX - mmR, mmY - mmR, mmX + mmR, mmY + mmR,
+            renderQuad(mmX - mmRx, mmY - mmR, mmX + mmRx, mmY + mmR,
                        glm::vec3(0.05f, 0.08f, 0.05f));
 
             // Border
-            float bw = 0.005f;
-            renderQuad(mmX - mmR - bw, mmY - mmR - bw, mmX + mmR + bw, mmY - mmR,
+            float bw = 0.005f, bwx = 0.005f / aspect;
+            renderQuad(mmX - mmRx - bwx, mmY - mmR - bw, mmX + mmRx + bwx, mmY - mmR,
                        glm::vec3(0.3f, 0.5f, 0.3f));
-            renderQuad(mmX - mmR - bw, mmY + mmR, mmX + mmR + bw, mmY + mmR + bw,
+            renderQuad(mmX - mmRx - bwx, mmY + mmR, mmX + mmRx + bwx, mmY + mmR + bw,
                        glm::vec3(0.3f, 0.5f, 0.3f));
-            renderQuad(mmX - mmR - bw, mmY - mmR, mmX - mmR, mmY + mmR,
+            renderQuad(mmX - mmRx - bwx, mmY - mmR, mmX - mmRx, mmY + mmR,
                        glm::vec3(0.3f, 0.5f, 0.3f));
-            renderQuad(mmX + mmR, mmY - mmR, mmX + mmR + bw, mmY + mmR,
+            renderQuad(mmX + mmRx, mmY - mmR, mmX + mmRx + bwx, mmY + mmR,
                        glm::vec3(0.3f, 0.5f, 0.3f));
 
             // Convert world pos to minimap NDC
             auto worldToMM = [&](float wx, float wz) -> glm::vec2 {
                 float dx = wx - s.camera.pos.x;
                 float dz = wz - s.camera.pos.z;
-                float mx = mmX + (dx / MINIMAP_RADIUS) * mmR;
+                float mx = mmX + (dx / MINIMAP_RADIUS) * mmRx;
                 float my = mmY - (dz / MINIMAP_RADIUS) * mmR;
                 return glm::vec2(mx, my);
             };
             auto inMM = [&](glm::vec2 p) {
-                return p.x > mmX - mmR && p.x < mmX + mmR &&
+                return p.x > mmX - mmRx && p.x < mmX + mmRx &&
                        p.y > mmY - mmR && p.y < mmY + mmR;
+            };
+            // Square dot regardless of screen aspect
+            auto renderDot = [&](glm::vec2 p, float hs, glm::vec3 color, float alphaV) {
+                renderQuadA(p.x - hs / aspect, p.y - hs, p.x + hs / aspect, p.y + hs,
+                            color, alphaV);
             };
 
             float dotS = 0.006f;
@@ -2177,33 +2183,25 @@ static void main_loop() {
             for (const auto& h : s.houses) {
                 if (h.destroyed) continue;
                 glm::vec2 p = worldToMM(h.pos.x, h.pos.z);
-                if (inMM(p))
-                    renderQuad(p.x-dotS, p.y-dotS, p.x+dotS, p.y+dotS,
-                               glm::vec3(0.9f, 0.3f, 0.2f));
+                if (inMM(p)) renderDot(p, dotS, glm::vec3(0.9f, 0.3f, 0.2f), 1.0f);
             }
             // Trees (green dots)
             for (const auto& tr : s.chunkTrees) {
                 if (tr.destroyed) continue;
                 glm::vec2 p = worldToMM(tr.pos.x, tr.pos.z);
-                if (inMM(p))
-                    renderQuad(p.x-dotS*0.7f, p.y-dotS*0.7f, p.x+dotS*0.7f, p.y+dotS*0.7f,
-                               glm::vec3(0.2f, 0.7f, 0.2f));
+                if (inMM(p)) renderDot(p, dotS*0.7f, glm::vec3(0.2f, 0.7f, 0.2f), 1.0f);
             }
             // Props (gray dots)
             for (const auto& pr : s.chunkProps) {
                 if (pr.destroyed) continue;
                 glm::vec2 p = worldToMM(pr.pos.x, pr.pos.z);
-                if (inMM(p))
-                    renderQuad(p.x-dotS*0.5f, p.y-dotS*0.5f, p.x+dotS*0.5f, p.y+dotS*0.5f,
-                               glm::vec3(0.5f, 0.5f, 0.5f));
+                if (inMM(p)) renderDot(p, dotS*0.5f, glm::vec3(0.5f, 0.5f, 0.5f), 1.0f);
             }
             // Power-ups (bright colored dots)
             for (const auto& pu : s.powerUps) {
                 if (pu.collected) continue;
                 glm::vec2 p = worldToMM(pu.pos.x, pu.pos.z);
-                if (inMM(p))
-                    renderQuad(p.x-dotS, p.y-dotS, p.x+dotS, p.y+dotS,
-                               glm::vec3(1.0f, 1.0f, 0.0f));
+                if (inMM(p)) renderDot(p, dotS, glm::vec3(1.0f, 1.0f, 0.0f), 1.0f);
             }
             // Tornado trail (faded gray dots)
             {
@@ -2213,9 +2211,7 @@ static void main_loop() {
                     float trailAlpha = (1.0f - age) * 0.45f;
                     if (trailAlpha < 0.05f) continue;
                     glm::vec2 p = worldToMM(s.tornadoTrail[ti].x, s.tornadoTrail[ti].y);
-                    if (inMM(p))
-                        renderQuadA(p.x-dotS*0.4f, p.y-dotS*0.4f, p.x+dotS*0.4f, p.y+dotS*0.4f,
-                                    glm::vec3(0.6f, 0.6f, 0.7f), trailAlpha);
+                    if (inMM(p)) renderDot(p, dotS*0.4f, glm::vec3(0.6f, 0.6f, 0.7f), trailAlpha);
                 }
             }
             // Tornado (white cross)
@@ -2223,22 +2219,21 @@ static void main_loop() {
                 glm::vec2 tp = worldToMM(s.tornadoPos.x, s.tornadoPos.y);
                 float cs = dotS * 2.0f;
                 if (inMM(tp)) {
-                    renderQuad(tp.x-cs, tp.y-dotS*0.5f, tp.x+cs, tp.y+dotS*0.5f,
+                    renderQuad(tp.x-cs/aspect, tp.y-dotS*0.5f, tp.x+cs/aspect, tp.y+dotS*0.5f,
                                glm::vec3(1.0f, 1.0f, 1.0f));
-                    renderQuad(tp.x-dotS*0.5f, tp.y-cs, tp.x+dotS*0.5f, tp.y+cs,
+                    renderQuad(tp.x-dotS*0.5f/aspect, tp.y-cs, tp.x+dotS*0.5f/aspect, tp.y+cs,
                                glm::vec3(1.0f, 1.0f, 1.0f));
                 }
             }
             // Player (cyan dot at center)
-            renderQuad(mmX-dotS, mmY-dotS, mmX+dotS, mmY+dotS,
-                       glm::vec3(0.0f, 1.0f, 1.0f));
+            renderDot(glm::vec2(mmX, mmY), dotS, glm::vec3(0.0f, 1.0f, 1.0f), 1.0f);
         }
 
         // ── Tornado fading warning (game over countdown) ──
         if (s.gamePhase == GamePhase::PLAYING && s.minScaleTimer > 0.5f) {
             float remain = GAMEOVER_FADE_TIME - s.minScaleTimer;
             float wPulse = 0.6f + 0.4f * sinf(t * 6.0f);
-            snprintf(buf, sizeof(buf), "TORNADO FADING: %d", (int)ceilf(remain));
+            snprintf(buf, sizeof(buf), "TORNADA SLABESTE: %d", (int)ceilf(remain));
             float ww = (float)strlen(buf) * 0.028f;
             renderLine(buf, -ww * 0.5f, 0.55f, 0.028f, 0.056f,
                        glm::vec3(1.0f, 0.25f, 0.15f) * wPulse);
@@ -2251,7 +2246,7 @@ static void main_loop() {
                 alpha = (WAVE_ANNOUNCE_TIME - s.wave.announceTimer) * 2.0f;
 
             float bigCW = 0.05f, bigCH = 0.1f;
-            snprintf(buf, sizeof(buf), "WAVE %d", s.wave.number);
+            snprintf(buf, sizeof(buf), "VALUL %d", s.wave.number);
             float textW = (float)strlen(buf) * bigCW;
             renderLine(buf, -textW * 0.5f, 0.1f, bigCW, bigCH,
                        glm::vec3(0.5f, 0.9f, 1.0f) * alpha);
@@ -2261,13 +2256,13 @@ static void main_loop() {
                 {0.5f,0.9f,0.5f}, {0.8f,0.9f,0.3f}, {1.0f,0.8f,0.2f},
                 {1.0f,0.55f,0.1f}, {1.0f,0.25f,0.05f}, {1.0f,0.1f,0.1f}
             };
-            snprintf(buf, sizeof(buf), "EF%d TORNADO", s.wave.efScale);
+            snprintf(buf, sizeof(buf), "TORNADA EF%d", s.wave.efScale);
             float efW = (float)strlen(buf) * 0.032f;
             renderLine(buf, -efW * 0.5f, 0.03f, 0.032f, 0.064f,
                        EF_COLORS[std::clamp(s.wave.efScale, 0, 5)] * alpha);
 
             float smCW = 0.025f, smCH = 0.05f;
-            snprintf(buf, sizeof(buf), "DESTROY %d OBJECTS", s.wave.target);
+            snprintf(buf, sizeof(buf), "DISTRUGE %d OBIECTE", s.wave.target);
             float stW = (float)strlen(buf) * smCW;
             renderLine(buf, -stW * 0.5f, -0.05f, smCW, smCH,
                        glm::vec3(0.8f, 0.8f, 0.8f) * alpha);
@@ -2282,46 +2277,46 @@ static void main_loop() {
                        glm::vec3(0.02f, 0.02f, 0.05f), 0.85f);
 
             float bigCW = 0.06f, bigCH = 0.12f;
-            const char* victoryText = "VICTORY";
-            float vw = 7.0f * bigCW;
+            const char* victoryText = "VICTORIE";
+            float vw = (float)strlen(victoryText) * bigCW;
             float pulse = 0.7f + 0.3f * sinf(t * 3.0f);
             renderLine(victoryText, -vw * 0.5f, 0.25f, bigCW, bigCH,
                        glm::vec3(1.0f, 0.85f, 0.0f) * pulse);
 
             float smCW = 0.02f, smCH = 0.04f;
-            snprintf(buf, sizeof(buf), "ALL %d WAVES COMPLETE", TOTAL_WAVES);
+            snprintf(buf, sizeof(buf), "TOATE CELE %d VALURI COMPLETE", TOTAL_WAVES);
             float bw2 = (float)strlen(buf) * smCW;
             renderLine(buf, -bw2 * 0.5f, 0.17f, smCW, smCH,
                        glm::vec3(0.7f, 0.9f, 1.0f));
 
-            snprintf(buf, sizeof(buf), "SCORE: %d", s.score.scorePoints);
+            snprintf(buf, sizeof(buf), "SCOR: %d", s.score.scorePoints);
             bw2 = (float)strlen(buf) * smCW;
             renderLine(buf, -bw2 * 0.5f, 0.10f, smCW, smCH,
                        glm::vec3(1.0f, 0.9f, 0.2f));
 
-            snprintf(buf, sizeof(buf), "TOTAL DESTROYED: %d", s.score.totalDestroyed);
+            snprintf(buf, sizeof(buf), "TOTAL DISTRUSE: %d", s.score.totalDestroyed);
             bw2 = (float)strlen(buf) * smCW;
             renderLine(buf, -bw2 * 0.5f, 0.04f, smCW, smCH,
                        glm::vec3(0.9f, 0.9f, 0.9f));
 
-            snprintf(buf, sizeof(buf), "MAX TORNADO: x%.1f", s.tornadoScale);
+            snprintf(buf, sizeof(buf), "TORNADA MAX: x%.1f", s.tornadoScale);
             bw2 = (float)strlen(buf) * smCW;
             renderLine(buf, -bw2 * 0.5f, -0.03f, smCW, smCH,
                        glm::vec3(1.0f, 0.5f, 0.3f));
 
             int hi = getHighScore();
-            snprintf(buf, sizeof(buf), "HIGH SCORE: %d", hi);
+            snprintf(buf, sizeof(buf), "RECORD: %d", hi);
             bw2 = (float)strlen(buf) * smCW;
             renderLine(buf, -bw2 * 0.5f, -0.11f, smCW, smCH,
                        glm::vec3(1.0f, 0.9f, 0.3f));
 
             if (s.victoryTimer > 2.0f) {
                 float blink = (sinf(t * 4.0f) > 0.0f) ? 1.0f : 0.3f;
-                const char* copyHint = "PRESS C TO COPY SCORE";
+                const char* copyHint = "APASA C PENTRU COPIERE SCOR";
                 float chw = (float)strlen(copyHint) * smCW * 0.85f;
                 renderLine(copyHint, -chw * 0.5f, -0.22f, smCW * 0.85f, smCH * 0.85f,
                            glm::vec3(0.4f, 0.9f, 0.9f) * blink);
-                const char* restart = "PRESS R TO RESTART";
+                const char* restart = "APASA R PENTRU RESTART";
                 float rw = (float)strlen(restart) * smCW;
                 renderLine(restart, -rw * 0.5f, -0.30f, smCW, smCH,
                            glm::vec3(0.6f, 0.8f, 0.6f) * blink);
@@ -2342,35 +2337,35 @@ static void main_loop() {
                        glm::vec3(1.0f, 0.25f, 0.2f));
 
             float smCW = 0.02f, smCH = 0.04f;
-            const char* sub = "THE TORNADO DIED OUT";
+            const char* sub = "TORNADA S-A RISIPIT";
             float bw2 = (float)strlen(sub) * smCW;
             renderLine(sub, -bw2 * 0.5f, 0.17f, smCW, smCH,
                        glm::vec3(0.8f, 0.7f, 0.7f));
 
-            snprintf(buf, sizeof(buf), "SCORE: %d", s.score.scorePoints);
+            snprintf(buf, sizeof(buf), "SCOR: %d", s.score.scorePoints);
             bw2 = (float)strlen(buf) * smCW;
             renderLine(buf, -bw2 * 0.5f, 0.10f, smCW, smCH,
                        glm::vec3(1.0f, 0.9f, 0.2f));
 
-            snprintf(buf, sizeof(buf), "WAVE REACHED: %d/%d", s.wave.number, TOTAL_WAVES);
+            snprintf(buf, sizeof(buf), "VAL ATINS: %d/%d", s.wave.number, TOTAL_WAVES);
             bw2 = (float)strlen(buf) * smCW;
             renderLine(buf, -bw2 * 0.5f, 0.04f, smCW, smCH,
                        glm::vec3(0.7f, 0.85f, 1.0f));
 
-            snprintf(buf, sizeof(buf), "TOTAL DESTROYED: %d", s.score.totalDestroyed);
+            snprintf(buf, sizeof(buf), "TOTAL DISTRUSE: %d", s.score.totalDestroyed);
             bw2 = (float)strlen(buf) * smCW;
             renderLine(buf, -bw2 * 0.5f, -0.03f, smCW, smCH,
                        glm::vec3(0.9f, 0.9f, 0.9f));
 
             int hi = getHighScore();
-            snprintf(buf, sizeof(buf), "HIGH SCORE: %d", hi);
+            snprintf(buf, sizeof(buf), "RECORD: %d", hi);
             bw2 = (float)strlen(buf) * smCW;
             renderLine(buf, -bw2 * 0.5f, -0.11f, smCW, smCH,
                        glm::vec3(1.0f, 0.9f, 0.3f));
 
             if (s.victoryTimer > 1.5f) {
                 float blink = (sinf(t * 4.0f) > 0.0f) ? 1.0f : 0.3f;
-                const char* restart = "PRESS R TO RESTART";
+                const char* restart = "APASA R PENTRU RESTART";
                 float rw = (float)strlen(restart) * smCW;
                 renderLine(restart, -rw * 0.5f, -0.24f, smCW, smCH,
                            glm::vec3(0.6f, 0.8f, 0.6f) * blink);
@@ -2701,6 +2696,41 @@ int main() {
             {'.', {"00000","00000","00000","00000","00000","01100","01100"}},
             {'x', {"00000","00000","10001","01010","00100","01010","10001"}},
             {' ', {"00000","00000","00000","00000","00000","00000","00000"}},
+            {'J', {"00111","00010","00010","00010","00010","10010","01100"}},
+            {'Q', {"01110","10001","10001","10001","10101","10010","01101"}},
+            {'/', {"00001","00001","00010","00100","01000","10000","10000"}},
+            {'-', {"00000","00000","00000","01110","00000","00000","00000"}},
+            {'!', {"00100","00100","00100","00100","00100","00000","00100"}},
+            {'%', {"11001","11010","00010","00100","01000","01011","10011"}},
+            {'+', {"00000","00100","00100","11111","00100","00100","00000"}},
+            {',', {"00000","00000","00000","00000","00110","00110","01000"}},
+            {'(', {"00010","00100","01000","01000","01000","00100","00010"}},
+            {')', {"01000","00100","00010","00010","00010","00100","01000"}},
+            {'a', {"00000","00000","01110","00001","01111","10001","01111"}},
+            {'b', {"10000","10000","11110","10001","10001","10001","11110"}},
+            {'c', {"00000","00000","01110","10000","10000","10001","01110"}},
+            {'d', {"00001","00001","01111","10001","10001","10001","01111"}},
+            {'e', {"00000","00000","01110","10001","11111","10000","01110"}},
+            {'f', {"00110","01001","01000","11100","01000","01000","01000"}},
+            {'g', {"00000","01111","10001","10001","01111","00001","01110"}},
+            {'h', {"10000","10000","11110","10001","10001","10001","10001"}},
+            {'i', {"00100","00000","01100","00100","00100","00100","01110"}},
+            {'j', {"00010","00000","00110","00010","00010","10010","01100"}},
+            {'k', {"10000","10000","10010","10100","11000","10100","10010"}},
+            {'l', {"01100","00100","00100","00100","00100","00100","01110"}},
+            {'m', {"00000","00000","11010","10101","10101","10101","10101"}},
+            {'n', {"00000","00000","11110","10001","10001","10001","10001"}},
+            {'o', {"00000","00000","01110","10001","10001","10001","01110"}},
+            {'p', {"00000","00000","11110","10001","11110","10000","10000"}},
+            {'q', {"00000","00000","01111","10001","01111","00001","00001"}},
+            {'r', {"00000","00000","10110","11001","10000","10000","10000"}},
+            {'s', {"00000","00000","01111","10000","01110","00001","11110"}},
+            {'t', {"01000","01000","11100","01000","01000","01001","00110"}},
+            {'u', {"00000","00000","10001","10001","10001","10011","01101"}},
+            {'v', {"00000","00000","10001","10001","10001","01010","00100"}},
+            {'w', {"00000","00000","10001","10101","10101","10101","01010"}},
+            {'y', {"00000","00000","10001","10001","01111","00001","01110"}},
+            {'z', {"00000","00000","11111","00010","00100","01000","11111"}},
         };
         for (auto& g : glyphs) {
             int idx = g.ch - 32;
