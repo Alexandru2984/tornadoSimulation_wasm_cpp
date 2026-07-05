@@ -109,6 +109,9 @@ static const int   TOTAL_WAVES           = 10;
 static const float WAVE_ANNOUNCE_TIME    = 3.0f;    // seconds to show "WAVE X"
 static const int   WAVE_BASE_TARGET      = 5;       // wave 1 target = 5 destroys
 
+// Game over: tornado stuck at minimum size for this long = defeat
+static const float GAMEOVER_FADE_TIME    = 12.0f;
+
 // Power-ups
 static const int   MAX_POWERUPS          = 3;       // max on map
 static const float POWERUP_SPAWN_INTERVAL = 8.0f;   // seconds between spawn tries
@@ -332,7 +335,8 @@ struct AppState {
     // Wave system
     GamePhase gamePhase = GamePhase::WAVE_ANNOUNCE;
     Wave wave;
-    float victoryTimer = 0.0f;
+    float victoryTimer = 0.0f;   // also reused as the game-over screen timer
+    float minScaleTimer = 0.0f;  // time spent at minimum tornado size
 
     // Power-ups
     std::vector<PowerUp> powerUps;
@@ -449,6 +453,7 @@ extern "C" {
         app.wave.announceTimer = 0.0f;
         app.gamePhase = GamePhase::WAVE_ANNOUNCE;
         app.victoryTimer = 0.0f;
+        app.minScaleTimer = 0.0f;
         app.activePowerUps.clear();
         app.powerUps.clear();
         app.powerUpSpawnTimer = 5.0f;
@@ -467,6 +472,10 @@ extern "C" {
     }
     EMSCRIPTEN_KEEPALIVE int get_score_points() {
         return app.score.scorePoints;
+    }
+    // 0=PLAYING, 1=WAVE_ANNOUNCE, 2=VICTORY, 3=GAME_OVER
+    EMSCRIPTEN_KEEPALIVE int get_game_phase() {
+        return (int)app.gamePhase;
     }
 }
 #endif
@@ -935,6 +944,23 @@ EM_JS(void, js_playVictorySound, (), {
     }
 });
 
+EM_JS(void, js_playGameOverSound, (), {
+    var a = window._tornadoAudio; if (!a) return;
+    var ctx = a.ctx;
+    var notes = [392, 330, 262, 196];
+    for (var i = 0; i < notes.length; i++) {
+        var osc = ctx.createOscillator();
+        osc.type = "sine"; osc.frequency.value = notes[i];
+        var g = ctx.createGain();
+        g.gain.setValueAtTime(0, ctx.currentTime + i*0.25);
+        g.gain.linearRampToValueAtTime(0.2, ctx.currentTime + i*0.25 + 0.05);
+        g.gain.linearRampToValueAtTime(0, ctx.currentTime + i*0.25 + 0.6);
+        osc.connect(g); g.connect(ctx.destination);
+        osc.start(ctx.currentTime + i*0.25);
+        osc.stop(ctx.currentTime + i*0.25 + 0.6);
+    }
+});
+
 EM_JS(void, js_saveScore, (int score, int wave), {
     try {
         var key = "tornado3d_scores";
@@ -989,6 +1015,11 @@ static void updateWindVolume(float tornadoScale) {
 static void playVictorySound() {
 #ifdef PLATFORM_EMSCRIPTEN
     if (!g_soundMuted) js_playVictorySound();
+#endif
+}
+static void playGameOverSound() {
+#ifdef PLATFORM_EMSCRIPTEN
+    if (!g_soundMuted) js_playGameOverSound();
 #endif
 }
 static void saveScore(int score, int wave) {
@@ -1102,6 +1133,20 @@ static void main_loop() {
         }
     }
 
+    // ── Game over: tornado starved at minimum size for too long ──
+    if (s.gamePhase == GamePhase::PLAYING) {
+        if (s.tornadoScale <= TORNADO_MIN_SCALE + 0.001f && !hasShield)
+            s.minScaleTimer += dt;
+        else
+            s.minScaleTimer = 0.0f;
+        if (s.minScaleTimer >= GAMEOVER_FADE_TIME) {
+            s.gamePhase = GamePhase::GAME_OVER;
+            s.victoryTimer = 0.0f;
+            playGameOverSound();
+            saveScore(s.score.scorePoints, s.wave.number);
+        }
+    }
+
     // ── Update active power-ups ──
     float speedMult = 1.0f;
     float sizeMult  = 1.0f;
@@ -1191,6 +1236,8 @@ static void main_loop() {
     // ── Destruction: damage houses near tornado ──
     float efMult = EF_RADIUS_MULT[std::clamp(s.wave.efScale, 0, 5)];
     float effectiveRadius = DESTRUCTION_RADIUS * s.tornadoScale * sizeMult * efMult;
+    if (s.gamePhase == GamePhase::GAME_OVER) effectiveRadius = 0.0f; // dead tornado
+
     bool destroyedSomething = false;
     float newPoints = 0.0f;
     for (auto& h : s.houses) {
@@ -2111,6 +2158,16 @@ static void main_loop() {
                        glm::vec3(0.0f, 1.0f, 1.0f));
         }
 
+        // ── Tornado fading warning (game over countdown) ──
+        if (s.gamePhase == GamePhase::PLAYING && s.minScaleTimer > 0.5f) {
+            float remain = GAMEOVER_FADE_TIME - s.minScaleTimer;
+            float wPulse = 0.6f + 0.4f * sinf(t * 6.0f);
+            snprintf(buf, sizeof(buf), "TORNADO FADING: %d", (int)ceilf(remain));
+            float ww = (float)strlen(buf) * 0.028f;
+            renderLine(buf, -ww * 0.5f, 0.55f, 0.028f, 0.056f,
+                       glm::vec3(1.0f, 0.25f, 0.15f) * wPulse);
+        }
+
         // ── Wave announcement overlay ──
         if (s.gamePhase == GamePhase::WAVE_ANNOUNCE) {
             float alpha = 1.0f;
@@ -2195,6 +2252,55 @@ static void main_loop() {
             }
         }
 
+        // ── Game over screen ──
+        if (s.gamePhase == GamePhase::GAME_OVER) {
+            s.victoryTimer += dt;
+
+            renderQuadA(-0.62f, -0.42f, 0.62f, 0.48f,
+                        glm::vec3(0.06f, 0.02f, 0.02f), 0.85f);
+
+            float bigCW = 0.06f, bigCH = 0.12f;
+            const char* goText = "GAME OVER";
+            float gw = (float)strlen(goText) * bigCW;
+            renderLine(goText, -gw * 0.5f, 0.25f, bigCW, bigCH,
+                       glm::vec3(1.0f, 0.25f, 0.2f));
+
+            float smCW = 0.02f, smCH = 0.04f;
+            const char* sub = "THE TORNADO DIED OUT";
+            float bw2 = (float)strlen(sub) * smCW;
+            renderLine(sub, -bw2 * 0.5f, 0.17f, smCW, smCH,
+                       glm::vec3(0.8f, 0.7f, 0.7f));
+
+            snprintf(buf, sizeof(buf), "SCORE: %d", s.score.scorePoints);
+            bw2 = (float)strlen(buf) * smCW;
+            renderLine(buf, -bw2 * 0.5f, 0.10f, smCW, smCH,
+                       glm::vec3(1.0f, 0.9f, 0.2f));
+
+            snprintf(buf, sizeof(buf), "WAVE REACHED: %d/%d", s.wave.number, TOTAL_WAVES);
+            bw2 = (float)strlen(buf) * smCW;
+            renderLine(buf, -bw2 * 0.5f, 0.04f, smCW, smCH,
+                       glm::vec3(0.7f, 0.85f, 1.0f));
+
+            snprintf(buf, sizeof(buf), "TOTAL DESTROYED: %d", s.score.totalDestroyed);
+            bw2 = (float)strlen(buf) * smCW;
+            renderLine(buf, -bw2 * 0.5f, -0.03f, smCW, smCH,
+                       glm::vec3(0.9f, 0.9f, 0.9f));
+
+            int hi = getHighScore();
+            snprintf(buf, sizeof(buf), "HIGH SCORE: %d", hi);
+            bw2 = (float)strlen(buf) * smCW;
+            renderLine(buf, -bw2 * 0.5f, -0.11f, smCW, smCH,
+                       glm::vec3(1.0f, 0.9f, 0.3f));
+
+            if (s.victoryTimer > 1.5f) {
+                float blink = (sinf(t * 4.0f) > 0.0f) ? 1.0f : 0.3f;
+                const char* restart = "PRESS R TO RESTART";
+                float rw = (float)strlen(restart) * smCW;
+                renderLine(restart, -rw * 0.5f, -0.24f, smCW, smCH,
+                           glm::vec3(0.6f, 0.8f, 0.6f) * blink);
+            }
+        }
+
         // ── Lightning full-screen flash ──
         if (s.lightning.intensity > 0.01f) {
             float flashAlpha = s.lightning.intensity * 0.28f;
@@ -2206,8 +2312,8 @@ static void main_loop() {
         glEnable(GL_DEPTH_TEST);
     }
 
-    // ── Restart on R key (during victory) ──
-    if (s.gamePhase == GamePhase::VICTORY) {
+    // ── Restart on R key (during victory or game over) ──
+    if (s.gamePhase == GamePhase::VICTORY || s.gamePhase == GamePhase::GAME_OVER) {
         if (glfwGetKey(s.window, GLFW_KEY_R) == GLFW_PRESS) {
             s.score = Score{};
             s.tornadoScale = 1.0f;
@@ -2216,6 +2322,7 @@ static void main_loop() {
             s.wave.announceTimer = 0.0f;
             s.gamePhase = GamePhase::WAVE_ANNOUNCE;
             s.victoryTimer = 0.0f;
+            s.minScaleTimer = 0.0f;
             s.activePowerUps.clear();
             s.powerUps.clear();
             s.powerUpSpawnTimer = 5.0f;
