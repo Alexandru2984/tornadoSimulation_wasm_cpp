@@ -48,3 +48,4 @@
 # Ignore by default, but keep shaders and source
 !shaders/
 !src/
+\n# Leaderboard database (created by the service at runtime)\n/server/scores.db
