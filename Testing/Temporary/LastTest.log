@@ -1,0 +1,43 @@
+Start testing: Jul 06 00:56 UTC
+----------------------------------------------------------
+1/1 Testing: test_math
+1/1 Test: test_math
+Command: "/home/runner/work/_temp/ab41106a-f5c0-4b3e-8da8-dade255c3486/emsdk-main/node/22.16.0_64bit/bin/node" "/home/runner/work/tornadoSimulation_wasm_cpp/tornadoSimulation_wasm_cpp/build-wasm/test_math.js"
+Directory: /home/runner/work/tornadoSimulation_wasm_cpp/tornadoSimulation_wasm_cpp/build-wasm
+"test_math" start time: Jul 06 00:56 UTC
+Output:
+----------------------------------------------------------
+Running 21 tests...
+
+  [RUN]  vec3_addition  [OK]
+  [RUN]  vec3_subtraction  [OK]
+  [RUN]  vec3_scalar_multiply  [OK]
+  [RUN]  vec3_dot  [OK]
+  [RUN]  vec3_cross  [OK]
+  [RUN]  vec3_normalize  [OK]
+  [RUN]  vec3_length  [OK]
+  [RUN]  mat4_identity  [OK]
+  [RUN]  mat4_translate  [OK]
+  [RUN]  mat4_scale  [OK]
+  [RUN]  mat4_multiply_identity  [OK]
+  [RUN]  mat4_perspective  [OK]
+  [RUN]  mat4_lookAt  [OK]
+  [RUN]  tornado_position_interpolation  [OK]
+  [RUN]  tornado_mesh_radius_increases_with_height  [OK]
+  [RUN]  vortex_tangent_direction  [OK]
+  [RUN]  particle_respawn_stays_bounded  [OK]
+  [RUN]  damping_reduces_velocity  [OK]
+  [RUN]  camera_direction_from_angles  [OK]
+  [RUN]  camera_pitch_clamp  [OK]
+  [RUN]  shader_version_adaptation  [OK]
+
+21 passed, 0 failed out of 21 tests.
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"test_math" end time: Jul 06 00:56 UTC
+"test_math" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Jul 06 00:56 UTC

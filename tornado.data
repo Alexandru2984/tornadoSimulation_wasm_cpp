@@ -1,0 +1,395 @@
+#version 330 core
+in vec3 vCol;
+in vec3 vNormal;
+in vec3 vWorldPos;
+in float vHeight;
+in vec2 vUV;
+out vec4 FragColor;
+
+uniform vec3 uTint;
+uniform vec3 uCamPos;
+uniform float uOpacity;
+uniform int uObjType; // 0=default,1=house,2=tree,3=ground,4=tornado,5=debris,6=water
+uniform int uHasAlbedo;
+uniform sampler2D uAlbedo;
+uniform float uLightningFlash;
+uniform float uTimeOfDay;  // 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
+uniform float uTime;
+uniform float uWaterLevel;
+
+void main() {
+    vec3 N = normalize(vNormal);
+    vec3 V = normalize(uCamPos - vWorldPos);
+
+    // ── Day/night sun direction ──
+    float sunAngle = (uTimeOfDay - 0.25) * 6.28318;
+    vec3 lightDir = normalize(vec3(cos(sunAngle) * 0.6, -sin(sunAngle), -0.3));
+
+    // Day brightness factor
+    float sunHeight = sin((uTimeOfDay - 0.25) * 3.14159);
+    float dayBright = clamp(sunHeight, 0.0, 1.0);
+    float ambientBase = mix(0.04, 0.14, dayBright);
+
+    float diff = max(dot(N, -lightDir), 0.0) * dayBright;
+    float spec = pow(max(dot(reflect(lightDir, N), V), 0.0), 24.0) * 0.28 * dayBright;
+    vec3 ambient = (ambientBase + uLightningFlash * 0.6) * (vCol * (uTint * 0.95));
+    vec3 diffuse = 1.0 * diff * (vCol * (uTint * 0.95));
+    vec3 final_col = ambient + diffuse + spec;
+
+    if (uHasAlbedo == 1) {
+        vec3 al = texture(uAlbedo, vUV).rgb;
+        final_col *= al;
+    }
+
+    // Sunset/sunrise warm tint
+    float horizonFactor = 1.0 - abs(sunHeight);
+    float warmth = smoothstep(0.3, 0.8, horizonFactor) * dayBright * 0.5;
+    final_col += vec3(warmth * 0.3, warmth * 0.1, -warmth * 0.05);
+
+    float heightFactor = smoothstep(0.0, 6.0, vHeight);
+    float desat = mix(0.2, 0.9, heightFactor);
+    vec3 gray = vec3(dot(final_col, vec3(0.299,0.587,0.114)));
+    vec3 tornadoFinal = mix(gray, final_col, desat);
+
+    vec3 outCol = final_col;
+    float outAlpha = 1.0;
+
+    if (uObjType == 1) {
+        // house
+        if (vHeight > 1.02) {
+            outCol = vec3(0.45, 0.2, 0.16) * (vCol * uTint);
+        } else {
+            vec2 m = vWorldPos.xz * 2.0;
+            float bricks = step(0.0, sin(m.x*3.0)*sin(m.y*6.0));
+            outCol = mix(vec3(0.9,0.78,0.6), vec3(0.78,0.6,0.45), bricks) * (vCol * uTint);
+            if (vNormal.z < -0.3 && vHeight > 0.5 && vHeight < 0.9) {
+                outCol *= 0.35;
+            }
+            if (vNormal.z < -0.3 && vHeight < 0.5 && abs(vWorldPos.x - 0.0) < 0.18) {
+                outCol = mix(outCol, vec3(0.2,0.12,0.08), 0.9);
+            }
+        }
+        if (dayBright < 0.3 && vNormal.z < -0.3 && vHeight > 0.5 && vHeight < 0.9) {
+            outCol += vec3(0.35, 0.3, 0.1) * (1.0 - dayBright);
+        }
+        outCol *= mix(0.3, 1.0, dayBright * 0.8 + 0.2);
+        outAlpha = clamp(1.0 * uOpacity, 0.9, 1.0);
+
+    } else if (uObjType == 2) {
+        // tree
+        if (vHeight < 0.35) {
+            outCol = vec3(0.38,0.25,0.14) * (vCol * uTint);
+        } else {
+            float f = smoothstep(0.35, 1.2, vHeight);
+            outCol = mix(vec3(0.08,0.28,0.08), vec3(0.12,0.45,0.12), f) * (vCol * uTint);
+        }
+        outCol *= mix(0.25, 1.0, dayBright * 0.8 + 0.2);
+        outAlpha = clamp(1.0 * uOpacity, 0.85, 1.0);
+
+    } else if (uObjType == 3) {
+        // terrain ground
+        outCol = vCol * uTint;
+        float gr = fract(vWorldPos.x * 0.15) * fract(vWorldPos.z * 0.15);
+        outCol *= 0.85 + 0.15 * gr;
+        outCol = ambient + diff * outCol + spec * 0.1;
+        outCol *= mix(0.2, 1.0, dayBright * 0.85 + 0.15);
+        outAlpha = clamp(1.0 * uOpacity, 0.95, 1.0);
+
+    } else if (uObjType == 5) {
+        // debris
+        outCol = final_col;
+        outAlpha = uOpacity;
+
+    } else if (uObjType == 6) {
+        // water
+        float wx = vWorldPos.x * 0.8 + uTime * 1.2;
+        float wz = vWorldPos.z * 0.6 + uTime * 0.9;
+        vec3 waveN = normalize(vec3(
+            cos(wx) * 0.08 + cos(wz * 1.3 + uTime * 0.7) * 0.05,
+            1.0,
+            sin(wz) * 0.08 + sin(wx * 0.9 + uTime * 1.1) * 0.05
+        ));
+        float wDiff = max(dot(waveN, -lightDir), 0.0) * dayBright;
+        float wSpec = pow(max(dot(reflect(lightDir, waveN), V), 0.0), 64.0) * 0.6 * dayBright;
+
+        vec3 deepCol  = vec3(0.03, 0.08, 0.18);
+        vec3 shallowCol = vec3(0.1, 0.3, 0.45);
+        float depthFactor = smoothstep(-2.0, 0.0, vWorldPos.y - uWaterLevel);
+        vec3 waterBase = mix(deepCol, shallowCol, depthFactor);
+
+        float fresnel = pow(1.0 - max(dot(waveN, V), 0.0), 3.0);
+        vec3 skyReflect = mix(vec3(0.15, 0.2, 0.3), vec3(0.4, 0.5, 0.7), dayBright);
+        waterBase = mix(waterBase, skyReflect, fresnel * 0.5);
+
+        outCol = waterBase * (ambientBase + 0.3) + waterBase * wDiff * 0.7 + vec3(wSpec);
+        outCol *= mix(0.3, 1.0, dayBright * 0.8 + 0.2);
+        outCol += vec3(uLightningFlash * 0.4);
+        outAlpha = uOpacity;
+
+    } else {
+        // tornado
+        float fres = pow(1.0 - max(dot(N, V), 0.0), 1.6);
+        float baseAlpha = 1.0 - smoothstep(0.0, 6.0, vHeight);
+        baseAlpha *= (1.0 - 0.55 * heightFactor);
+        outAlpha = clamp(baseAlpha * (0.6 + 0.3 * fres) * uOpacity, 0.02, 1.0);
+        float fog = smoothstep(8.0, 28.0, length(uCamPos - vWorldPos));
+        outCol = mix(tornadoFinal, vec3(0.06,0.06,0.08), fog);
+    }
+
+    // Distance fog
+    float fogDist = length(uCamPos - vWorldPos);
+    float fogFactor = smoothstep(80.0, 180.0, fogDist);
+    vec3 fogColor = mix(vec3(0.02, 0.02, 0.04), vec3(0.12, 0.12, 0.16), dayBright);
+    outCol = mix(outCol, fogColor, fogFactor);
+
+    FragColor = vec4(outCol, outAlpha);
+}
+#version 330 core
+in vec2 vUV;
+in vec4 vColor;
+in float vMode;
+out vec4 FragColor;
+uniform sampler2D uFontTex;
+void main() {
+    float a = vColor.a;
+    if (vMode > 0.5) {
+        float t = texture(uFontTex, vUV).r;
+        if (t < 0.3) discard;
+        a *= t;
+    }
+    FragColor = vec4(vColor.rgb, a);
+}
+#version 330 core
+layout(location=0) in vec2 aPos;
+layout(location=1) in vec2 aUV;
+layout(location=2) in vec4 aColor;
+layout(location=3) in float aMode; // 0 = solid quad, 1 = font glyph
+out vec2 vUV;
+out vec4 vColor;
+out float vMode;
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+    vUV = aUV;
+    vColor = aColor;
+    vMode = aMode;
+}
+#version 330 core
+in float vLife;
+out vec4 FragColor;
+
+uniform vec3 uColor;
+
+void main() {
+    // soft circular particle
+    vec2 uv = gl_PointCoord.xy - 0.5;
+    float d = length(uv);
+    float mask = smoothstep(0.5, 0.45, d);
+    float a = clamp(vLife, 0.0, 1.0) * mask;
+    // bias alpha so outer layer appears denser and darker
+    float alpha = a * 0.9;
+    // slightly reduce overall brightness to avoid white hotspots
+    vec3 c = uColor * 0.85;
+    FragColor = vec4(c, alpha);
+}
+#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in float aLife;
+
+uniform mat4 uProj;
+uniform mat4 uView;
+uniform mat4 uModel;
+uniform float uPointScale; // multiplier set per-pass
+
+out float vLife;
+
+void main() {
+    vec4 world = uModel * vec4(aPos, 1.0);
+    gl_Position = uProj * uView * world;
+    vLife = aLife;
+    // point size scaled per-pass and by remaining life (younger -> larger)
+    gl_PointSize = uPointScale * 6.0 * (0.35 + vLife*0.65);
+}
+#version 330 core
+in float vAlpha;
+out vec4 FragColor;
+
+void main() {
+    vec2 uv = gl_PointCoord.xy - 0.5;
+    float d = length(uv);
+    float mask = smoothstep(0.5, 0.2, d);
+    float a = vAlpha * mask * 0.35;
+    FragColor = vec4(0.6, 0.65, 0.8, a);
+}
+#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in float aAlpha;
+
+uniform mat4 uProj;
+uniform mat4 uView;
+
+out float vAlpha;
+
+void main() {
+    gl_Position = uProj * uView * vec4(aPos, 1.0);
+    vAlpha = aAlpha;
+    gl_PointSize = 1.5;
+}
+#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+
+uniform float uLightningFlash;
+uniform float uTime;
+uniform float uTimeOfDay;
+
+void main() {
+    float y = vUV.y;
+
+    // Sun height for day/night
+    float sunHeight = sin((uTimeOfDay - 0.25) * 3.14159);
+    float dayBright = clamp(sunHeight, 0.0, 1.0);
+    float duskFactor = 1.0 - abs(sunHeight);
+    float isDusk = smoothstep(0.3, 0.8, duskFactor) * dayBright;
+
+    // Night sky colors (storm)
+    vec3 nightTop     = vec3(0.01, 0.01, 0.03);
+    vec3 nightMid     = vec3(0.04, 0.04, 0.08);
+    vec3 nightHorizon = vec3(0.08, 0.06, 0.1);
+
+    // Day sky colors (stormy day)
+    vec3 dayTop     = vec3(0.15, 0.18, 0.35);
+    vec3 dayMid     = vec3(0.25, 0.3, 0.45);
+    vec3 dayHorizon = vec3(0.45, 0.42, 0.48);
+
+    // Sunset/sunrise colors
+    vec3 duskTop     = vec3(0.08, 0.06, 0.15);
+    vec3 duskMid     = vec3(0.35, 0.15, 0.12);
+    vec3 duskHorizon = vec3(0.65, 0.3, 0.15);
+
+    // Blend based on time of day
+    vec3 topColor, midColor, horizonColor;
+    if (isDusk > 0.1) {
+        topColor     = mix(mix(nightTop, dayTop, dayBright), duskTop, isDusk);
+        midColor     = mix(mix(nightMid, dayMid, dayBright), duskMid, isDusk);
+        horizonColor = mix(mix(nightHorizon, dayHorizon, dayBright), duskHorizon, isDusk);
+    } else {
+        topColor     = mix(nightTop, dayTop, dayBright);
+        midColor     = mix(nightMid, dayMid, dayBright);
+        horizonColor = mix(nightHorizon, dayHorizon, dayBright);
+    }
+
+    vec3 sky;
+    if (y > 0.5) {
+        sky = mix(midColor, topColor, (y - 0.5) * 2.0);
+    } else {
+        sky = mix(horizonColor, midColor, y * 2.0);
+    }
+
+    // Animated swirling cloud wisps (stronger during day)
+    float cloudAlpha = mix(0.3, 1.0, dayBright);
+    float cx = vUV.x * 6.0 + uTime * 0.15;
+    float cy = vUV.y * 3.0 + uTime * 0.08;
+    float cloud = sin(cx) * cos(cy + sin(cx * 0.5)) * 0.5 + 0.5;
+    cloud *= smoothstep(0.25, 0.65, y);
+    sky += cloud * vec3(0.03, 0.03, 0.04) * cloudAlpha;
+
+    // Dark swirl center (above tornado)
+    float swirl = sin(vUV.x * 10.0 + uTime * 0.5 + vUV.y * 5.0)
+                * cos(vUV.y * 8.0 - uTime * 0.3 + vUV.x * 3.0) * 0.5 + 0.5;
+    float centerDist = length(vUV - vec2(0.5, 0.75));
+    float swirlMask = smoothstep(0.45, 0.05, centerDist);
+    sky += swirl * swirlMask * vec3(0.04, 0.04, 0.06);
+
+    // Stars at night
+    if (dayBright < 0.3) {
+        float starField = fract(sin(dot(floor(vUV * 200.0), vec2(12.9898, 78.233))) * 43758.5453);
+        float star = step(0.997, starField) * (1.0 - dayBright * 3.3);
+        sky += vec3(star * 0.8);
+    }
+
+    // Sun glow (near horizon during day)
+    if (dayBright > 0.05) {
+        float sunAngle = (uTimeOfDay - 0.25) * 6.28318;
+        vec2 sunPos = vec2(0.5 + cos(sunAngle) * 0.3, 0.3 + sin(sunAngle) * 0.4);
+        float sunDist = length(vUV - sunPos);
+        float sunGlow = smoothstep(0.25, 0.0, sunDist) * dayBright * 0.4;
+        sky += vec3(sunGlow * 1.2, sunGlow * 0.9, sunGlow * 0.4);
+    }
+
+    // Lightning flash
+    sky += vec3(uLightningFlash * 0.85);
+
+    FragColor = vec4(sky, 1.0);
+}
+#version 330 core
+out vec2 vUV;
+void main() {
+    // Fullscreen triangle via gl_VertexID (3 verts cover entire screen)
+    vec2 pos = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    vUV = pos;
+    gl_Position = vec4(pos * 2.0 - 1.0, 0.9999, 1.0);
+}
+#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec3 aCol;
+layout(location = 3) in vec2 aUV;
+
+out vec3 vCol;
+out vec3 vNormal;
+out vec3 vWorldPos;
+out float vHeight;
+out vec2 vUV;
+
+uniform mat4 uProj;
+uniform mat4 uView;
+uniform mat4 uModel;
+uniform float uTime;
+uniform float uEnableSwirl;
+uniform mat3 uNormalMat;
+uniform float uWindBend;
+uniform vec3 uWindSource;
+uniform int uObjType;
+
+void main() {
+    float height = aPos.y;
+    vec3 p = aPos;
+
+    // Water wave vertex displacement
+    if (uObjType == 6) {
+        float wave1 = sin(p.x * 0.5 + uTime * 1.5) * 0.06;
+        float wave2 = sin(p.z * 0.7 + uTime * 1.1) * 0.04;
+        float wave3 = sin((p.x + p.z) * 0.3 + uTime * 0.8) * 0.03;
+        p.y += wave1 + wave2 + wave3;
+    }
+
+    if (uEnableSwirl > 0.5) {
+        float swirlAmt = 0.25 * (1.0 - height / 6.0);
+        float angOff = uTime * 2.0 + height * 3.0;
+        p.x = aPos.x * cos(angOff) - aPos.z * sin(angOff);
+        p.z = aPos.x * sin(angOff) + aPos.z * cos(angOff);
+        float pulse = 1.0 + 0.05 * sin(uTime * 6.0 + height * 8.0);
+        p.x *= pulse;
+        p.z *= pulse;
+    }
+
+    // Wind bending (for trees near tornado)
+    if (uWindBend > 0.0) {
+        vec3 objOrigin = (uModel * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        vec3 toWind = uWindSource - objOrigin;
+        float dist = length(toWind.xz);
+        float bendStrength = uWindBend / (1.0 + dist * 0.3);
+        vec3 bendDir = vec3(0.0);
+        if (dist > 0.01) bendDir = normalize(vec3(toWind.x, 0.0, toWind.z));
+        float hf = max(p.y, 0.0);
+        p.xyz += bendDir * bendStrength * hf * 0.15;
+    }
+
+    vec4 worldPos = uModel * vec4(p, 1.0);
+    vWorldPos = worldPos.xyz;
+    vNormal = normalize(uNormalMat * aNormal);
+    vCol = aCol;
+    vUV = aUV;
+    vHeight = height;
+    gl_Position = uProj * uView * worldPos;
+}
