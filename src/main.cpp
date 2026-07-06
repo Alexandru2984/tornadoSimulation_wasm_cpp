@@ -187,11 +187,14 @@ struct ChunkBird {
 };
 
 struct Score {
-    int housesDestroyed = 0;
-    int treesDestroyed  = 0;
-    int propsDestroyed  = 0;
-    int totalDestroyed  = 0;
-    int scorePoints     = 0;
+    int housesDestroyed   = 0;
+    int treesDestroyed    = 0;
+    int propsDestroyed    = 0;
+    int animalsDestroyed  = 0;
+    int vehiclesDestroyed = 0;
+    int birdsDestroyed    = 0;
+    int totalDestroyed    = 0;
+    int scorePoints       = 0;
 };
 
 // Game state machine
@@ -299,6 +302,10 @@ struct AppState {
 
     // Haptics throttle (avoid a constant buzz while destroying)
     float lastHapticTime = -1.0f;
+
+    // Run stats
+    int   maxCombo   = 0;
+    float runStartT  = 0.0f;   // game time when the current run began
 
     // Tornado path trail (world XZ positions)
     std::deque<glm::vec2> tornadoTrail;
@@ -475,6 +482,8 @@ extern "C" {
         app.trailSampleTimer = 0.0f;
         app.timeAttack = false;
         app.timeAttackRemaining = 0.0f;
+        app.maxCombo = 0;
+        app.runStartT = (float)(glfwGetTime() - app.startTime);
         g_paused = false;
     }
     EMSCRIPTEN_KEEPALIVE void start_time_attack() {
@@ -1297,7 +1306,7 @@ static void main_loop() {
                 an.destroyed = true;
                 s.destroyedObjs.insert(makeObjKey(an.chunkX, an.chunkZ, 3, an.genIdx));
                 spawnDebris(an.pos, 10);
-                s.score.propsDestroyed++;
+                s.score.animalsDestroyed++;
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
@@ -1339,7 +1348,7 @@ static void main_loop() {
                 v.destroyed = true;
                 s.destroyedObjs.insert(makeObjKey(v.chunkX, v.chunkZ, 4, v.genIdx));
                 spawnDebris(v.pos, 30);
-                s.score.propsDestroyed++;
+                s.score.vehiclesDestroyed++;
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
@@ -1385,7 +1394,7 @@ static void main_loop() {
                 b.destroyed = true;
                 s.destroyedObjs.insert(makeObjKey(b.chunkX, b.chunkZ, 5, b.genIdx));
                 spawnDebris(b.pos, 8);
-                s.score.propsDestroyed++;
+                s.score.birdsDestroyed++;
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
@@ -1406,6 +1415,7 @@ static void main_loop() {
         s.comboCount++;
         s.comboTimer      = 2.5f;
         s.comboMultiplier = 1.0f + std::min(s.comboCount / 3.0f, 4.0f);
+        if (s.comboCount > s.maxCombo) s.maxCombo = s.comboCount;
         int awarded = (int)(newPoints * s.comboMultiplier * scoreMult);
         s.score.scorePoints += awarded;
         // Floating "+N" popup above the tornado
@@ -2428,67 +2438,58 @@ static void main_loop() {
             }
         }
 
+        // Shared centered line + end-of-run stat breakdown
+        auto centerLine = [&](const char* txt, float y, float cwv, float chv, glm::vec3 col) {
+            float w = (float)strlen(txt) * cwv;
+            renderLine(txt, -w * 0.5f, y, cwv, chv, col);
+        };
+        auto drawEndStats = [&](float y) {
+            float cwv = 0.016f, chv = 0.032f;
+            snprintf(buf, sizeof(buf), "CASE %d  COPACI %d  ALTE %d",
+                     s.score.housesDestroyed, s.score.treesDestroyed, s.score.propsDestroyed);
+            centerLine(buf, y, cwv, chv, glm::vec3(0.8f, 0.8f, 0.85f));
+            snprintf(buf, sizeof(buf), "ANIMALE %d  MASINI %d  PASARI %d",
+                     s.score.animalsDestroyed, s.score.vehiclesDestroyed, s.score.birdsDestroyed);
+            centerLine(buf, y - 0.045f, cwv, chv, glm::vec3(0.8f, 0.8f, 0.85f));
+            int secs = (int)std::max(0.0f, t - s.runStartT);
+            snprintf(buf, sizeof(buf), "COMBO MAX %d   TIMP %d:%02d",
+                     s.maxCombo, secs / 60, secs % 60);
+            centerLine(buf, y - 0.09f, cwv, chv, glm::vec3(1.0f, 0.6f, 0.3f));
+        };
+
         // ── Victory screen ──
         if (s.gamePhase == GamePhase::VICTORY) {
             s.victoryTimer += dt;
 
-            // Semi-dark background
-            renderQuadA(-0.62f, -0.42f, 0.62f, 0.48f,
-                       glm::vec3(0.02f, 0.02f, 0.05f), 0.85f);
+            renderQuadA(-0.64f, -0.50f, 0.64f, 0.52f,
+                       glm::vec3(0.02f, 0.02f, 0.05f), 0.88f);
 
-            float bigCW = 0.06f, bigCH = 0.12f;
+            float bigCW = 0.055f, bigCH = 0.11f;
             const char* victoryText = s.timeAttack ? "TIMP EXPIRAT" : "VICTORIE";
-            float vw = (float)strlen(victoryText) * bigCW;
             float pulse = 0.7f + 0.3f * sinf(t * 3.0f);
-            renderLine(victoryText, -vw * 0.5f, 0.25f, bigCW, bigCH,
-                       glm::vec3(1.0f, 0.85f, 0.0f) * pulse);
+            centerLine(victoryText, 0.34f, bigCW, bigCH, glm::vec3(1.0f, 0.85f, 0.0f) * pulse);
 
             float smCW = 0.02f, smCH = 0.04f;
-            if (s.timeAttack)
-                snprintf(buf, sizeof(buf), "TIME ATTACK - 3 MINUTE");
-            else
-                snprintf(buf, sizeof(buf), "TOATE CELE %d VALURI COMPLETE", TOTAL_WAVES);
-            float bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, 0.17f, smCW, smCH,
-                       glm::vec3(0.7f, 0.9f, 1.0f));
+            if (s.timeAttack) snprintf(buf, sizeof(buf), "TIME ATTACK - 3 MINUTE");
+            else snprintf(buf, sizeof(buf), "TOATE CELE %d VALURI COMPLETE", TOTAL_WAVES);
+            centerLine(buf, 0.26f, smCW * 0.85f, smCH * 0.85f, glm::vec3(0.7f, 0.9f, 1.0f));
 
             snprintf(buf, sizeof(buf), "SCOR: %d", s.score.scorePoints);
-            bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, 0.10f, smCW, smCH,
-                       glm::vec3(1.0f, 0.9f, 0.2f));
+            centerLine(buf, 0.18f, smCW, smCH, glm::vec3(1.0f, 0.9f, 0.2f));
 
-            snprintf(buf, sizeof(buf), "TOTAL DISTRUSE: %d", s.score.totalDestroyed);
-            bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, 0.04f, smCW, smCH,
-                       glm::vec3(0.9f, 0.9f, 0.9f));
+            drawEndStats(0.10f);
 
-            snprintf(buf, sizeof(buf), "TORNADA MAX: x%.1f", s.tornadoScale);
-            bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, -0.03f, smCW, smCH,
-                       glm::vec3(1.0f, 0.5f, 0.3f));
+            snprintf(buf, sizeof(buf), "TORNADA MAX x%.1f   RECORD %d",
+                     s.tornadoScale, getHighScore());
+            centerLine(buf, -0.07f, smCW * 0.8f, smCH * 0.8f, glm::vec3(1.0f, 0.7f, 0.3f));
 
-            int hi = getHighScore();
-            snprintf(buf, sizeof(buf), "RECORD: %d", hi);
-            bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, -0.11f, smCW, smCH,
-                       glm::vec3(1.0f, 0.9f, 0.3f));
-
-            if (s.victoryTimer > 2.0f) {
+            if (s.victoryTimer > 1.5f) {
                 float blink = (sinf(t * 4.0f) > 0.0f) ? 1.0f : 0.3f;
-                const char* copyHint = "APASA C PENTRU COPIERE SCOR";
-                float chw = (float)strlen(copyHint) * smCW * 0.85f;
-                renderLine(copyHint, -chw * 0.5f, -0.22f, smCW * 0.85f, smCH * 0.85f,
-                           glm::vec3(0.4f, 0.9f, 0.9f) * blink);
-                const char* restart = "APASA R PENTRU RESTART";
-                float rw = (float)strlen(restart) * smCW;
-                renderLine(restart, -rw * 0.5f, -0.30f, smCW, smCH,
-                           glm::vec3(0.6f, 0.8f, 0.6f) * blink);
-                if (!s.timeAttack) {
-                    const char* endless = "APASA E PENTRU MOD INFINIT";
-                    float ew = (float)strlen(endless) * smCW * 0.85f;
-                    renderLine(endless, -ew * 0.5f, -0.38f, smCW * 0.85f, smCH * 0.85f,
-                               glm::vec3(0.9f, 0.6f, 1.0f) * blink);
-                }
+                centerLine("APASA C = COPIAZA   R = RESTART", -0.18f,
+                           smCW * 0.72f, smCH * 0.72f, glm::vec3(0.5f, 0.9f, 0.9f) * blink);
+                if (!s.timeAttack)
+                    centerLine("APASA E = MOD INFINIT", -0.26f,
+                               smCW * 0.72f, smCH * 0.72f, glm::vec3(0.9f, 0.6f, 1.0f) * blink);
             }
         }
 
@@ -2496,47 +2497,28 @@ static void main_loop() {
         if (s.gamePhase == GamePhase::GAME_OVER) {
             s.victoryTimer += dt;
 
-            renderQuadA(-0.62f, -0.42f, 0.62f, 0.48f,
-                        glm::vec3(0.06f, 0.02f, 0.02f), 0.85f);
+            renderQuadA(-0.64f, -0.50f, 0.64f, 0.52f,
+                        glm::vec3(0.06f, 0.02f, 0.02f), 0.88f);
 
-            float bigCW = 0.06f, bigCH = 0.12f;
-            const char* goText = "GAME OVER";
-            float gw = (float)strlen(goText) * bigCW;
-            renderLine(goText, -gw * 0.5f, 0.25f, bigCW, bigCH,
-                       glm::vec3(1.0f, 0.25f, 0.2f));
+            float bigCW = 0.055f, bigCH = 0.11f;
+            centerLine("GAME OVER", 0.34f, bigCW, bigCH, glm::vec3(1.0f, 0.25f, 0.2f));
 
             float smCW = 0.02f, smCH = 0.04f;
-            const char* sub = "TORNADA S-A RISIPIT";
-            float bw2 = (float)strlen(sub) * smCW;
-            renderLine(sub, -bw2 * 0.5f, 0.17f, smCW, smCH,
+            centerLine("TORNADA S-A RISIPIT", 0.26f, smCW * 0.85f, smCH * 0.85f,
                        glm::vec3(0.8f, 0.7f, 0.7f));
 
             snprintf(buf, sizeof(buf), "SCOR: %d", s.score.scorePoints);
-            bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, 0.10f, smCW, smCH,
-                       glm::vec3(1.0f, 0.9f, 0.2f));
+            centerLine(buf, 0.18f, smCW, smCH, glm::vec3(1.0f, 0.9f, 0.2f));
 
-            snprintf(buf, sizeof(buf), "VAL ATINS: %d/%d", s.wave.number, TOTAL_WAVES);
-            bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, 0.04f, smCW, smCH,
-                       glm::vec3(0.7f, 0.85f, 1.0f));
+            drawEndStats(0.10f);
 
-            snprintf(buf, sizeof(buf), "TOTAL DISTRUSE: %d", s.score.totalDestroyed);
-            bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, -0.03f, smCW, smCH,
-                       glm::vec3(0.9f, 0.9f, 0.9f));
-
-            int hi = getHighScore();
-            snprintf(buf, sizeof(buf), "RECORD: %d", hi);
-            bw2 = (float)strlen(buf) * smCW;
-            renderLine(buf, -bw2 * 0.5f, -0.11f, smCW, smCH,
-                       glm::vec3(1.0f, 0.9f, 0.3f));
+            snprintf(buf, sizeof(buf), "VAL ATINS %d/%d   RECORD %d",
+                     s.wave.number, TOTAL_WAVES, getHighScore());
+            centerLine(buf, -0.07f, smCW * 0.8f, smCH * 0.8f, glm::vec3(0.7f, 0.85f, 1.0f));
 
             if (s.victoryTimer > 1.5f) {
                 float blink = (sinf(t * 4.0f) > 0.0f) ? 1.0f : 0.3f;
-                const char* restart = "APASA R PENTRU RESTART";
-                float rw = (float)strlen(restart) * smCW;
-                renderLine(restart, -rw * 0.5f, -0.24f, smCW, smCH,
+                centerLine("APASA R PENTRU RESTART", -0.18f, smCW, smCH,
                            glm::vec3(0.6f, 0.8f, 0.6f) * blink);
             }
         }
@@ -2625,6 +2607,8 @@ static void main_loop() {
             s.comboMultiplier = 1.0f;
             s.tornadoTrail.clear();
             s.trailSampleTimer = 0.0f;
+            s.maxCombo = 0;
+            s.runStartT = t;
         }
     }
 
