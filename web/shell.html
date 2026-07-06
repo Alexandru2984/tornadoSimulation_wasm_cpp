@@ -3,6 +3,10 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="description" content="Tornada 3D — controleaza o tornada, distruge case si copaci, supravietuieste 10 valuri. Joc C++ / WebAssembly / WebGL2, direct in browser.">
+    <meta property="og:title" content="Tornada 3D">
+    <meta property="og:description" content="Controleaza o tornada, distruge tot si supravietuieste 10 valuri. Direct in browser.">
+    <meta property="og:type" content="website">
     <title>Tornada 3D — WebAssembly</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -56,7 +60,24 @@
         }
         .ctrl-btn:hover { background: rgba(126,200,227,0.25); }
         .ctrl-btn.active { background: rgba(255,100,100,0.18); border-color: rgba(255,100,100,0.45); color: #f88; }
-        @media (hover: none) and (pointer: coarse) { #controls { display: none; } }
+        #menu-toggle {
+            display: none;
+            position: absolute;
+            top: 8px; right: 8px;
+            z-index: 20;
+            background: rgba(20,25,40,0.7);
+            border: 1px solid rgba(126,200,227,0.4);
+            color: #7ec8e3;
+            width: 38px; height: 38px;
+            border-radius: 6px;
+            font-size: 1.1rem;
+            cursor: pointer;
+        }
+        @media (hover: none) and (pointer: coarse) {
+            #controls { display: none; }
+            #controls.show { display: flex; }
+            #menu-toggle { display: block; }
+        }
         #canvas-container {
             position: relative;
             flex: 1;
@@ -204,6 +225,7 @@
     </div>
 
     <div id="canvas-container">
+        <button id="menu-toggle" aria-label="Meniu">&#9776;</button>
         <canvas class="emscripten" id="canvas"
                 oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
         <div id="spinner">
@@ -241,13 +263,16 @@
                 spinnerElement.classList.add('hidden');
                 statusElement.textContent = 'Rulare...';
                 initTouchControls();
-                // Auto-downgrade to Medium on mobile/touch devices
+                // Restore saved settings; default to Medium quality on mobile
+                var saved = {};
+                try { saved = JSON.parse(localStorage.getItem('tornado3d_settings') || '{}'); } catch(e) {}
                 var isMobile = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-                if (isMobile && Module._set_quality) {
-                    qualityLevel = 1;
-                    document.getElementById('btn-quality').textContent = qualityLabels[1];
-                    Module._set_quality(1);
-                }
+                var q = (typeof saved.quality === 'number' && saved.quality >= 0 && saved.quality <= 2)
+                        ? saved.quality : (isMobile ? 1 : 2);
+                qualityLevel = q;
+                document.getElementById('btn-quality').textContent = qualityLabels[q];
+                if (Module._set_quality) Module._set_quality(q);
+                if (saved.muted) document.getElementById('btn-mute').click();
             },
             monitorRunDependencies: function(left) {
                 if (left === 0) {
@@ -312,6 +337,8 @@
             }
 
             container.addEventListener('touchstart', function(e) {
+                // Let taps on the menu button behave as normal clicks
+                if (e.target && e.target.closest && e.target.closest('#menu-toggle')) return;
                 e.preventDefault();
                 for (var i = 0; i < e.changedTouches.length; i++) {
                     var t = e.changedTouches[i];
@@ -409,6 +436,20 @@
     </div>
 
     <script>
+        // ── Persisted settings ───────────────────────────────────
+        function saveSettings() {
+            try {
+                localStorage.setItem('tornado3d_settings',
+                    JSON.stringify({quality: qualityLevel, muted: soundMuted}));
+            } catch(e) {}
+        }
+
+        // ── Mobile menu toggle ───────────────────────────────────
+        document.getElementById('menu-toggle').addEventListener('click', function() {
+            document.getElementById('controls').classList.toggle('show');
+            setTimeout(resizeCanvas, 0); // canvas container height changed
+        });
+
         // ── UI control buttons ───────────────────────────────────
         document.getElementById('btn-fullscreen').addEventListener('click', function() {
             var el = document.getElementById('canvas-container');
@@ -440,6 +481,7 @@
             if (window._tornadoAudio && window._tornadoAudio.windGain) {
                 window._tornadoAudio.windGain.gain.value = soundMuted ? 0 : 0.15;
             }
+            saveSettings();
         });
 
         var qualityLevel = 2;
@@ -448,6 +490,7 @@
             qualityLevel = (qualityLevel + 1) % 3;
             this.textContent = qualityLabels[qualityLevel];
             if (Module._set_quality) Module._set_quality(qualityLevel);
+            saveSettings();
         });
 
         document.getElementById('btn-restart').addEventListener('click', function() {
@@ -463,17 +506,26 @@
             var list  = document.getElementById('scores-list');
             var scores = [];
             try { scores = JSON.parse(localStorage.getItem('tornado3d_scores') || '[]'); } catch(e) {}
-            list.innerHTML = scores.length === 0
-                ? '<li>Niciun scor salvat.</li>'
-                : scores.map(function(s, i) {
-                    return '<li>#' + (i+1) + ' — ' + s.score + ' obiecte · Unda ' + s.wave + ' · ' + (s.date||'') + '</li>';
-                }).join('');
+            list.textContent = '';
+            if (scores.length === 0) {
+                var li = document.createElement('li');
+                li.textContent = 'Niciun scor salvat.';
+                list.appendChild(li);
+            } else {
+                scores.forEach(function(sc, i) {
+                    var li = document.createElement('li');
+                    li.textContent = '#' + (i+1) + ' — ' + sc.score + ' puncte · Val ' +
+                                     sc.wave + ' · ' + (sc.date || '');
+                    list.appendChild(li);
+                });
+            }
             modal.classList.remove('hidden');
         });
         document.getElementById('scores-close').addEventListener('click', function() {
             document.getElementById('scores-modal').classList.add('hidden');
         });
 
+        var lastRPress = 0;
         window.addEventListener('keydown', function(e) {
             if (e.target && e.target.tagName === 'BUTTON') return;
             if (e.code === 'KeyF') document.getElementById('btn-fullscreen').click();
@@ -481,11 +533,31 @@
             if (e.code === 'KeyP' || (e.code === 'Escape' && !document.fullscreenElement))
                 document.getElementById('btn-pause').click();
             if (e.code === 'KeyM') document.getElementById('btn-mute').click();
-            if (e.code === 'KeyR') document.getElementById('btn-restart').click();
+            if (e.code === 'KeyR') {
+                // Instant restart on victory/game-over; mid-game requires a
+                // double press so an accidental R doesn't wipe the run
+                var phase = (Module && Module._get_game_phase) ? Module._get_game_phase() : 0;
+                var now = Date.now();
+                if (phase >= 2 || now - lastRPress < 1500) {
+                    lastRPress = 0;
+                    document.getElementById('btn-restart').click();
+                } else {
+                    lastRPress = now;
+                    var st = document.getElementById('status');
+                    if (st) {
+                        st.textContent = 'Apasa R din nou pentru restart';
+                        setTimeout(function() {
+                            if (st.textContent === 'Apasa R din nou pentru restart') st.textContent = '';
+                        }, 1600);
+                    }
+                }
+            }
             if (e.code === 'KeyC') {
                 var pts = (Module && Module._get_score_points) ? Module._get_score_points() : 0;
-                var text = 'Tornado 3D - Scor: ' + pts + ' puncte';
-                if (navigator.clipboard) {
+                var text = 'Tornada 3D - Scor: ' + pts + ' puncte';
+                if (navigator.share) {
+                    navigator.share({title: 'Tornada 3D', text: text}).catch(function(){});
+                } else if (navigator.clipboard) {
                     navigator.clipboard.writeText(text).then(function() {
                         var s = document.getElementById('status');
                         if (s) { var old = s.textContent; s.textContent = 'Scor copiat!'; setTimeout(function(){ s.textContent = old; }, 2000); }
