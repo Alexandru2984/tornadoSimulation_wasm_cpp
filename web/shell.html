@@ -166,6 +166,32 @@
             .mobile-hint { display: block; }
             #joystick-base { display: block; }
             #info { display: none; }
+            /* Reclaim vertical space for the play area on phones */
+            h1 { display: none; }
+            #canvas-container { border: none; border-radius: 0; }
+            body { padding: 0; }
+        }
+
+        /* Suggest landscape while the phone is held upright */
+        #rotate-hint {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: #1a1a2e;
+            color: #7ec8e3;
+            z-index: 200;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            gap: 14px;
+            font-size: 1rem;
+            padding: 24px;
+        }
+        #rotate-hint .rot-icon { font-size: 3rem; animation: rot 2s ease-in-out infinite; }
+        @keyframes rot { 0%,40% { transform: rotate(0); } 60%,100% { transform: rotate(-90deg); } }
+        @media (hover: none) and (pointer: coarse) and (orientation: portrait) {
+            #rotate-hint { display: flex; }
         }
         #scores-modal {
             position: fixed;
@@ -262,8 +288,13 @@
         <div class="touch-indicator" id="joystick-base"></div>
         <div class="touch-indicator" id="joystick-knob"></div>
         <div class="touch-indicator" id="look-indicator"></div>
-        <span class="mobile-hint" id="hint-left">&#x2B05; MOVE</span>
-        <span class="mobile-hint" id="hint-right">LOOK &#x27A1;</span>
+        <span class="mobile-hint" id="hint-left">&#x2B05; MISCARE</span>
+        <span class="mobile-hint" id="hint-right">ROTIRE + TORNADA &#x27A1;</span>
+    </div>
+
+    <div id="rotate-hint">
+        <div class="rot-icon">&#x1F4F1;</div>
+        <div>Roteste telefonul pe orizontala<br>pentru cea mai buna experienta</div>
     </div>
 
     <div id="status"></div>
@@ -332,6 +363,14 @@
             canvas.height = Math.floor(h * dpr * scale);
         }
         window.addEventListener('resize', resizeCanvas);
+        // Orientation changes need a tick for the new layout to settle
+        window.addEventListener('orientationchange', function() {
+            setTimeout(resizeCanvas, 200);
+        });
+        // Mobile browsers resize the visual viewport when toolbars show/hide
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', resizeCanvas);
+        }
         // Initial size set after a tick so container has layout
         setTimeout(resizeCanvas, 0);
 
@@ -346,9 +385,8 @@
             var joyKnob = document.getElementById('joystick-knob');
             var lookInd = document.getElementById('look-indicator');
 
-            var moveTouch = null;  // touch ID for movement
-            var lookTouch = null;  // touch ID for camera look
-            var tornadoTouch = null; // touch ID for tornado control
+            var moveTouch = null;  // touch ID for movement (left thumb)
+            var lookTouch = null;  // touch ID for camera look + tornado aim (right thumb)
             var moveOrigin = {x:0, y:0};
             var lookLast = {x:0, y:0};
             var joyRadius = 50;
@@ -392,15 +430,10 @@
                         joyKnob.style.top = (pos.y - 22) + 'px';
                         joyKnob.style.display = 'block';
                     } else if (!isLeftHalf(pos) && lookTouch === null) {
-                        // Right side: camera look
+                        // Right side: camera look + tornado aim (like the mouse on desktop)
                         lookTouch = t.identifier;
                         lookLast = pos;
                         if (Module._touch_set_look) Module._touch_set_look(0, 0, 1);
-                    }
-
-                    // Any touch also steers tornado
-                    if (tornadoTouch === null) {
-                        tornadoTouch = t.identifier;
                         updateTornadoCursor(pos);
                     }
                 }
@@ -429,10 +462,7 @@
                         var ldy = lookLast.y - pos.y;  // inverted Y
                         lookLast = pos;
                         if (Module._touch_set_look) Module._touch_set_look(ldx, ldy, 1);
-                    }
-
-                    if (t.identifier === tornadoTouch) {
-                        updateTornadoCursor(pos);
+                        updateTornadoCursor(pos);   // right thumb also aims the tornado
                     }
                 }
             }, {passive: false});
@@ -449,9 +479,6 @@
                     if (t.identifier === lookTouch) {
                         lookTouch = null;
                         if (Module._touch_set_look) Module._touch_set_look(0, 0, 0);
-                    }
-                    if (t.identifier === tornadoTouch) {
-                        tornadoTouch = null;
                     }
                 }
             }
@@ -513,6 +540,8 @@
         document.addEventListener('fullscreenchange', function() {
             document.getElementById('btn-fullscreen').textContent =
                 document.fullscreenElement ? '⛶ Fereastra (F)' : '⛶ Fullscreen (F)';
+            // The canvas container just changed size — re-fit the drawing buffer
+            setTimeout(resizeCanvas, 100);
         });
 
         var paused = false;
