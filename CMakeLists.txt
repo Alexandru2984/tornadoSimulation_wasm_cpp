@@ -72,6 +72,12 @@ if(USING_EMSCRIPTEN)
         )
     endif()
 
+    # Force a relink when the shell or preloaded shaders change — otherwise
+    # editing only the HTML/GLSL leaves a stale tornado.html/.data behind.
+    file(GLOB TORNADO_SHADERS "${CMAKE_SOURCE_DIR}/shaders/*.glsl")
+    set_target_properties(tornado PROPERTIES
+        LINK_DEPENDS "${CMAKE_SOURCE_DIR}/web/shell.html;${TORNADO_SHADERS}")
+
     target_link_libraries(tornado PRIVATE glm::glm)
 else()
     # --- Native / desktop build ---
