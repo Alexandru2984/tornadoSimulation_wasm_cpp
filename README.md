@@ -8,7 +8,9 @@ Runs natively on desktop (OpenGL 3.3) and in the browser (WebGL 2 via Emscripten
 - Procedural tornado mesh with swirl animation + particle system (2200 particles)
 - Infinite procedurally generated world: terrain heightmap, water, houses, trees, fences, cars, poles
 - Wave-based gameplay: 10 waves with EF0–EF5 tornado scales, combo multiplier, power-ups
-- Victory and game-over conditions, local leaderboard, score sharing
+- Endless mode after victory (press E), cows that wander and flee from the tornado
+- Victory and game-over conditions, score sharing
+- Local + global leaderboard (tiny SQLite API served from the VPS under `/api/`)
 - Day/night cycle, storm weather (rain, lightning + thunder), camera shake
 - Web Audio procedural sound effects (wind, destruction, thunder, jingles)
 - HUD with minimap, compass, wave progress — drawn in a single batched call
@@ -41,6 +43,12 @@ cmake --build build -j$(nproc)
 | Mouse | Controls the tornado position |
 | Right click + drag | Rotate camera |
 | W/A/S/D | Move camera |
+| P / Escape | Pause (web) |
+| M | Mute (web) |
+| R | Restart (double press mid-game, web) |
+| C | Share/copy score (web) |
+| E | Endless mode after victory |
+| F | Fullscreen (web) |
 
 ## Build & Run — WebAssembly (Browser)
 
@@ -119,7 +127,14 @@ so the long-lived immutable HTTP cache is busted on every deploy.
 │   └── shell.html          # HTML template for WASM (UI, touch controls, leaderboard)
 ├── src/
 │   ├── main.cpp            # Main application (AppState + main_loop)
+│   ├── constants.h         # All gameplay/rendering tunables
+│   ├── terrain_noise.h     # Hash/FBM noise + terrain height function
+│   ├── audio_web.h         # Web Audio EM_JS effects + desktop no-ops
+│   ├── font5x7.h           # HUD bitmap font glyphs
 │   └── test_math.cpp       # Unit tests (21 tests)
+├── server/
+│   ├── leaderboard.py      # Global leaderboard API (stdlib + SQLite)
+│   └── tornado-leaderboard.service  # systemd unit (nginx proxies /api/ -> :8791)
 └── shaders/                # GLSL: scene, particles, sky, rain, HUD
 ```
 
