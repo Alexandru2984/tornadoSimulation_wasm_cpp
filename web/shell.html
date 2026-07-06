@@ -101,6 +101,16 @@
             border-radius: 6px;
             overflow: hidden;
         }
+        /* In fullscreen the container must fill the whole screen — the
+           flex/max-width/border constraints otherwise shrink the play area. */
+        #canvas-container:fullscreen,
+        #canvas-container:-webkit-full-screen {
+            max-width: none;
+            width: 100vw;
+            height: 100vh;
+            border: none;
+            border-radius: 0;
+        }
         canvas.emscripten {
             display: block;
             width: 100% !important;
@@ -462,6 +472,12 @@
         }
         // Initial size set after a tick so container has layout
         setTimeout(resizeCanvas, 0);
+        // Re-fit the drawing buffer whenever the container actually changes
+        // size — the most reliable trigger for entering/leaving fullscreen.
+        if (window.ResizeObserver) {
+            var _ro = new ResizeObserver(function() { resizeCanvas(); });
+            _ro.observe(document.getElementById('canvas-container'));
+        }
 
         // ── Touch controls ───────────────────────────────────────
         function initTouchControls() {
