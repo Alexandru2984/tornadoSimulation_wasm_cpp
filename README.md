@@ -7,9 +7,10 @@ Runs natively on desktop (OpenGL 3.3) and in the browser (WebGL 2 via Emscripten
 
 - Procedural tornado mesh with swirl animation + particle system (2200 particles)
 - Infinite procedurally generated world: terrain heightmap, water, houses, trees, fences, cars, poles
-- Wave-based gameplay: 10 waves with EF0–EF5 tornado scales, combo multiplier, power-ups
+- Wave-based gameplay: 10 waves with EF0–EF5 tornado scales, combo multiplier
+- 5 power-ups (speed, size x2, magnet, shield, score x2) and 3 difficulty levels
 - Time Attack mode (3-minute score chase) + Endless mode after victory (press E)
-- Cows that wander and flee from the tornado; funnel darkens with the EF scale
+- Cows that flee from the tornado and cars that drive around; funnel darkens with the EF scale
 - Victory and game-over conditions, score sharing
 - Local + global leaderboard (tiny SQLite API served from the VPS under `/api/`, with backups + rate limiting)
 - Day/night cycle, storm weather (rain, lightning + thunder), camera shake
