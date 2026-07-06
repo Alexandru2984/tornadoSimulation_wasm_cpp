@@ -8,9 +8,10 @@ Runs natively on desktop (OpenGL 3.3) and in the browser (WebGL 2 via Emscripten
 - Procedural tornado mesh with swirl animation + particle system (2200 particles)
 - Infinite procedurally generated world: terrain heightmap, water, houses, trees, fences, cars, poles
 - Wave-based gameplay: 10 waves with EF0–EF5 tornado scales, combo multiplier, power-ups
-- Endless mode after victory (press E), cows that wander and flee from the tornado
+- Time Attack mode (3-minute score chase) + Endless mode after victory (press E)
+- Cows that wander and flee from the tornado; funnel darkens with the EF scale
 - Victory and game-over conditions, score sharing
-- Local + global leaderboard (tiny SQLite API served from the VPS under `/api/`)
+- Local + global leaderboard (tiny SQLite API served from the VPS under `/api/`, with backups + rate limiting)
 - Day/night cycle, storm weather (rain, lightning + thunder), camera shake
 - Web Audio procedural sound effects (wind, destruction, thunder, jingles)
 - HUD with minimap, compass, wave progress — drawn in a single batched call
@@ -133,7 +134,9 @@ so the long-lived immutable HTTP cache is busted on every deploy.
 │   ├── font5x7.h           # HUD bitmap font glyphs
 │   └── test_math.cpp       # Unit tests (21 tests)
 ├── server/
-│   ├── leaderboard.py      # Global leaderboard API (stdlib + SQLite)
+│   ├── leaderboard.py      # Global leaderboard API (stdlib + SQLite, name filter)
+│   ├── backup_scores.sh    # SQLite online backup (wire to cron)
+│   ├── nginx-tornado.conf.example   # Reference vhost with API rate limiting
 │   └── tornado-leaderboard.service  # systemd unit (nginx proxies /api/ -> :8791)
 └── shaders/                # GLSL: scene, particles, sky, rain, HUD
 ```
