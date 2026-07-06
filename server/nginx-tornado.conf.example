@@ -1,0 +1,41 @@
+# Reference nginx config for tornado.micutu.com — adapt paths/certs to your host.
+# The limit_req_zone MUST live in the http{} context (e.g. /etc/nginx/conf.d/),
+# not inside a server{} block.
+
+# ── put this in /etc/nginx/conf.d/tornado-rate-limit.conf ──
+limit_req_zone $binary_remote_addr zone=tornado_api:10m rate=30r/m;
+
+server {
+    server_name tornado.micutu.com;
+    root /var/www/tornado.micutu.com;
+    index index.html;
+
+    gzip on;
+    gzip_types application/wasm application/javascript text/css application/octet-stream;
+    gzip_min_length 1024;
+
+    # Long-lived cache for the versioned WASM assets (?v=<hash> busts it)
+    location ~* \.wasm$ {
+        default_type application/wasm;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+    location ~* \.(js|css|data)$ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
+    # Leaderboard API — proxied to the local Python service, rate limited
+    location /api/ {
+        limit_req zone=tornado_api burst=10 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8791;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    listen 443 ssl;
+    # ssl_certificate ... (managed by certbot)
+}
