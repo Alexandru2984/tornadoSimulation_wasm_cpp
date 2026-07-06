@@ -270,6 +270,41 @@
             cursor: pointer;
             font-size: 0.85rem;
         }
+        /* Tutorial / help overlay (reuses the modal look) */
+        #tutorial-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 150;
+        }
+        #tutorial-modal.hidden { display: none; }
+        #tutorial-box {
+            background: #1a1a2e;
+            border: 1px solid #7ec8e3;
+            border-radius: 10px;
+            padding: 22px 28px;
+            max-width: 460px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        #tutorial-box h2 { color: #7ec8e3; text-align: center; margin-bottom: 12px; font-size: 1.2rem; }
+        #tutorial-box h3 { color: #ffd700; font-size: 0.9rem; margin: 12px 0 4px; }
+        #tutorial-box ul { list-style: none; font-size: 0.85rem; line-height: 1.7; color: #ddd; }
+        #tutorial-box .key {
+            display: inline-block; min-width: 1.5em; text-align: center;
+            background: #10101f; border: 1px solid rgba(126,200,227,0.4);
+            border-radius: 4px; padding: 0 5px; color: #7ec8e3; font-weight: bold;
+        }
+        .tut-desktop, .tut-touch { display: none; }
+        #tutorial-start {
+            display: block; margin: 18px auto 0; padding: 8px 30px;
+            background: #7ec8e3; color: #1a1a2e; border: none; border-radius: 6px;
+            cursor: pointer; font-size: 0.95rem; font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -285,6 +320,7 @@
         <button class="ctrl-btn" id="btn-restart">↺ Restart (R)</button>
         <button class="ctrl-btn" id="btn-timeattack">⏱ Time Attack</button>
         <button class="ctrl-btn" id="btn-scores">🏆 Scoruri</button>
+        <button class="ctrl-btn" id="btn-help">❔ Ghid</button>
     </div>
 
     <div id="canvas-container">
@@ -310,6 +346,41 @@
     <div id="rotate-hint">
         <div class="rot-icon">&#x1F4F1;</div>
         <div>Roteste telefonul pe orizontala<br>pentru cea mai buna experienta</div>
+    </div>
+
+    <div id="tutorial-modal" class="hidden">
+        <div id="tutorial-box">
+            <h2>🌪️ Bine ai venit la Tornada 3D</h2>
+            <p style="font-size:0.85rem;color:#bbb;text-align:center;">
+                Controleaza o tornada, distruge tot ce prinzi si supravietuieste valurile.
+            </p>
+
+            <div class="tut-desktop">
+                <h3>Controale</h3>
+                <ul>
+                    <li><span class="key">Mouse</span> — ghideaza tornada</li>
+                    <li><span class="key">W A S D</span> — misca camera</li>
+                    <li><span class="key">Click dr.</span> + drag — roteste privirea</li>
+                    <li><span class="key">P</span> pauza · <span class="key">M</span> sunet · <span class="key">R</span> restart · <span class="key">F</span> fullscreen</li>
+                </ul>
+            </div>
+            <div class="tut-touch">
+                <h3>Controale</h3>
+                <ul>
+                    <li>👈 Degetul stang — joystick de miscare</li>
+                    <li>👉 Degetul drept — roteste privirea si ghideaza tornada</li>
+                    <li>⏸ stanga-sus — pauza · ☰ dreapta-sus — meniu</li>
+                </ul>
+            </div>
+
+            <h3>Scop</h3>
+            <ul>
+                <li>🏠 Case 100p · 🌳 Copaci 30p · 🚗 Masini 90p · 🐄 Animale 75p</li>
+                <li>Tornada creste cand distrugi, dar se micsoreaza cand stai — nu o lasa sa moara!</li>
+                <li>Prinde ⚡ power-up-uri si atinge <span class="key">10</span> valuri pentru victorie.</li>
+            </ul>
+            <button id="tutorial-start">Joaca</button>
+        </div>
     </div>
 
     <div id="status"></div>
@@ -354,6 +425,8 @@
                 difficulty = d;
                 document.getElementById('btn-difficulty').textContent = difficultyLabels[d];
                 if (Module._set_difficulty) Module._set_difficulty(d);
+                // First-time players get the tutorial (defined in the next script block)
+                if (typeof maybeShowTutorial === 'function') maybeShowTutorial();
             },
             monitorRunDependencies: function(left) {
                 if (left === 0) {
@@ -548,6 +621,31 @@
         document.getElementById('pause-toggle').addEventListener('click', function() {
             document.getElementById('btn-pause').click();
         });
+
+        // ── Tutorial / help overlay ──────────────────────────────
+        var tutorialOpen = false;
+        function showTutorial() {
+            var isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+            document.querySelector('.tut-touch').style.display = isTouch ? 'block' : 'none';
+            document.querySelector('.tut-desktop').style.display = isTouch ? 'none' : 'block';
+            document.getElementById('tutorial-modal').classList.remove('hidden');
+            tutorialOpen = true;
+            if (Module._set_paused) Module._set_paused(1); // freeze the game behind it
+        }
+        function hideTutorial() {
+            document.getElementById('tutorial-modal').classList.add('hidden');
+            tutorialOpen = false;
+            try { localStorage.setItem('tornado3d_seen_tutorial', '1'); } catch(e) {}
+            // Restore whatever pause state the player actually chose
+            if (Module._set_paused) Module._set_paused(paused ? 1 : 0);
+        }
+        document.getElementById('btn-help').addEventListener('click', showTutorial);
+        document.getElementById('tutorial-start').addEventListener('click', hideTutorial);
+        function maybeShowTutorial() {
+            var seen = false;
+            try { seen = localStorage.getItem('tornado3d_seen_tutorial') === '1'; } catch(e) {}
+            if (!seen) showTutorial();
+        }
 
         // ── UI control buttons ───────────────────────────────────
         document.getElementById('btn-fullscreen').addEventListener('click', function() {
