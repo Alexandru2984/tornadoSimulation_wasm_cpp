@@ -10,8 +10,9 @@ Runs natively on desktop (OpenGL 3.3) and in the browser (WebGL 2 via Emscripten
 - Wave-based gameplay: 10 waves with EF0–EF5 tornado scales, combo multiplier
 - 5 power-ups (speed, size x2, magnet, shield, score x2) and 3 difficulty levels
 - Time Attack mode (3-minute score chase) + Endless mode after victory (press E)
-- Cows that flee from the tornado and cars that drive around; funnel darkens with the EF scale
-- Victory and game-over conditions, score sharing
+- Cows, sheep and cars roam the world and flee/drive around; funnel darkens with the EF scale
+- Dynamic weather drifting between clear blue skies and lightning storms
+- First-run tutorial overlay, victory and game-over conditions, score sharing
 - Local + global leaderboard (tiny SQLite API served from the VPS under `/api/`, with backups + rate limiting)
 - Day/night cycle, storm weather (rain, lightning + thunder), camera shake
 - Web Audio procedural sound effects (wind, destruction, thunder, jingles)
