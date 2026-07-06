@@ -934,6 +934,22 @@ static void updateChunks(const glm::vec3& playerPos) {
     }
 }
 
+// Real drawing-buffer size of the canvas / window.
+// On Emscripten, GLFW caches the framebuffer size from glfwCreateWindow and
+// does NOT track canvas resizes done from JavaScript, so glfwGetFramebufferSize
+// keeps returning the initial 1280x720. Query the live canvas size instead —
+// otherwise the game renders into a fixed corner of a larger canvas.
+static void getFramebufferSize(GLFWwindow* window, int* w, int* h) {
+#ifdef PLATFORM_EMSCRIPTEN
+    if (emscripten_get_canvas_element_size("#canvas", w, h) == EMSCRIPTEN_RESULT_SUCCESS
+            && *w > 0 && *h > 0)
+        return;
+    glfwGetFramebufferSize(window, w, h);
+#else
+    glfwGetFramebufferSize(window, w, h);
+#endif
+}
+
 // ── GLFW callback ────────────────────────────────────────────────────
 static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
     int w, h;
@@ -998,7 +1014,7 @@ static void main_loop() {
     // Now intersects terrain instead of y=0
     {
         int w, h;
-        glfwGetFramebufferSize(s.window, &w, &h);
+        getFramebufferSize(s.window, &w, &h);
         float aspect = (w > 0 && h > 0) ? (float)w / (float)h : 1.0f;
         glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 200.0f);
         glm::mat4 view = s.camera.getView();
@@ -1595,7 +1611,7 @@ static void main_loop() {
 
     // -- Framebuffer / clear --
     int width, height;
-    glfwGetFramebufferSize(s.window, &width, &height);
+    getFramebufferSize(s.window, &width, &height);
     if (width == 0 || height == 0) return;
     glViewport(0, 0, width, height);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);

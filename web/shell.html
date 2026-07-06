@@ -449,17 +449,24 @@
         };
 
         // ── Responsive canvas sizing ─────────────────────────────
+        // The drawing buffer must match the container's DISPLAY size in device
+        // pixels, or the game renders into only part of the canvas.
         function resizeCanvas() {
             var container = document.getElementById('canvas-container');
             var canvas = document.getElementById('canvas');
             var dpr = window.devicePixelRatio || 1;
-            var w = container.clientWidth;
-            var h = container.clientHeight;
-            // Set actual pixel resolution (capped for performance on mobile)
-            var maxDim = ('ontouchstart' in window) ? 1280 : 1920;
-            var scale = Math.min(1, maxDim / Math.max(w * dpr, 1));
-            canvas.width  = Math.floor(w * dpr * scale);
-            canvas.height = Math.floor(h * dpr * scale);
+            var isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+            var eff = isTouch ? Math.min(dpr, 2) : dpr; // cap DPR on mobile for perf
+            var bw = Math.max(1, Math.round(container.clientWidth * eff));
+            var bh = Math.max(1, Math.round(container.clientHeight * eff));
+            // Safety cap on total pixels (keeps huge 4K*DPR buffers in check)
+            var MAXPIX = isTouch ? 2.5e6 : 9e6;
+            var pix = bw * bh;
+            if (pix > MAXPIX) { var sc = Math.sqrt(MAXPIX / pix); bw = Math.round(bw * sc); bh = Math.round(bh * sc); }
+            if (canvas.width !== bw || canvas.height !== bh) {
+                canvas.width = bw;
+                canvas.height = bh;
+            }
         }
         window.addEventListener('resize', resizeCanvas);
         // Orientation changes need a tick for the new layout to settle
