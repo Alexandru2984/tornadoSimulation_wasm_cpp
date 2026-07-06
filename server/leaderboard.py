@@ -21,6 +21,24 @@ MAX_BODY = 512
 RATE_SECONDS = 20
 _last_post = {}  # ip -> unix timestamp of last accepted POST
 
+# Minimal profanity/abuse blocklist (substring match on a-z0-9 only, so
+# "f.u.c.k" and "fuuuck"-style spacing tricks still get caught).
+BLOCKED = (
+    "fuck", "shit", "cunt", "nigger", "nigga", "faggot", "retard",
+    "bitch", "pussy", "dick", "cock", "whore", "rape", "nazi", "hitler",
+    "pula", "pizda", "muie", "cur", "coaie", "futu",
+)
+
+
+def name_is_allowed(name):
+    """Reject names that are all punctuation/whitespace or contain slurs."""
+    if not NAME_RE.match(name):
+        return False
+    if not any(c.isalnum() for c in name):
+        return False  # e.g. "..." or "----"
+    squashed = re.sub(r"[^a-z0-9]", "", name.lower())
+    return not any(bad in squashed for bad in BLOCKED)
+
 
 def db():
     conn = sqlite3.connect(DB_PATH)
@@ -80,7 +98,7 @@ class Handler(BaseHTTPRequestHandler):
             wave = int(data.get("wave"))
         except (ValueError, TypeError, json.JSONDecodeError):
             return self._send(400, {"error": "bad request"})
-        if (not NAME_RE.match(name)
+        if (not name_is_allowed(name)
                 or not 0 < score <= 1_000_000
                 or not 1 <= wave <= 999):
             return self._send(400, {"error": "invalid data"})
