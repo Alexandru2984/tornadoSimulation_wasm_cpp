@@ -73,10 +73,24 @@
             font-size: 1.1rem;
             cursor: pointer;
         }
+        #pause-toggle {
+            display: none;
+            position: absolute;
+            top: 8px; left: 8px;
+            z-index: 20;
+            background: rgba(20,25,40,0.7);
+            border: 1px solid rgba(126,200,227,0.4);
+            color: #7ec8e3;
+            width: 38px; height: 38px;
+            border-radius: 6px;
+            font-size: 1.1rem;
+            cursor: pointer;
+        }
         @media (hover: none) and (pointer: coarse) {
             #controls { display: none; }
             #controls.show { display: flex; }
             #menu-toggle { display: block; }
+            #pause-toggle { display: block; }
         }
         #canvas-container {
             position: relative;
@@ -275,6 +289,7 @@
 
     <div id="canvas-container">
         <button id="menu-toggle" aria-label="Meniu">&#9776;</button>
+        <button id="pause-toggle" aria-label="Pauza">&#9208;</button>
         <canvas class="emscripten" id="canvas"
                 oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
         <div id="spinner">
@@ -410,8 +425,9 @@
             }
 
             container.addEventListener('touchstart', function(e) {
-                // Let taps on the menu button behave as normal clicks
-                if (e.target && e.target.closest && e.target.closest('#menu-toggle')) return;
+                // Let taps on the overlay buttons behave as normal clicks
+                if (e.target && e.target.closest &&
+                    e.target.closest('#menu-toggle, #pause-toggle')) return;
                 e.preventDefault();
                 for (var i = 0; i < e.changedTouches.length; i++) {
                     var t = e.changedTouches[i];
@@ -528,6 +544,11 @@
             setTimeout(resizeCanvas, 0); // canvas container height changed
         });
 
+        // Always-visible pause button for touch play (mirrors the menu pause)
+        document.getElementById('pause-toggle').addEventListener('click', function() {
+            document.getElementById('btn-pause').click();
+        });
+
         // ── UI control buttons ───────────────────────────────────
         document.getElementById('btn-fullscreen').addEventListener('click', function() {
             var el = document.getElementById('canvas-container');
@@ -550,6 +571,8 @@
             this.textContent = paused ? '▶ Continua (P)' : '⏸ Pauza (P)';
             this.classList.toggle('active', paused);
             if (Module._set_paused) Module._set_paused(paused ? 1 : 0);
+            // Keep the floating touch pause button's icon in sync (▶ when paused)
+            document.getElementById('pause-toggle').innerHTML = paused ? '▶' : '⏸';
         });
 
         var soundMuted = false;
