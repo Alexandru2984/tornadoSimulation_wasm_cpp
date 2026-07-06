@@ -196,14 +196,17 @@
             body { padding: 0; }
         }
 
-        /* Suggest landscape while the phone is held upright */
+        /* Suggest landscape while the phone is held upright.
+           Non-blocking (pointer-events:none) and semi-transparent so it never
+           swallows taps meant for the menu/pause buttons or the game. */
         #rotate-hint {
             display: none;
             position: fixed;
             inset: 0;
-            background: #1a1a2e;
+            background: rgba(10,12,24,0.72);
             color: #7ec8e3;
-            z-index: 200;
+            z-index: 90;
+            pointer-events: none;
             flex-direction: column;
             align-items: center;
             justify-content: center;
