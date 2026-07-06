@@ -53,3 +53,4 @@
 /server/scores.db
 /server/backups/
 /server/backup.log
+/server/__pycache__/
