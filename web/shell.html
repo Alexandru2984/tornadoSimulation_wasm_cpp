@@ -111,6 +111,18 @@
             border: none;
             border-radius: 0;
         }
+        /* Pseudo-fullscreen fallback for iOS, where the Fullscreen API is not
+           available on non-video elements. */
+        #canvas-container.pseudo-fs {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            max-width: none;
+            border: none;
+            border-radius: 0;
+            z-index: 300;
+        }
         canvas.emscripten {
             display: block;
             width: 100% !important;
@@ -675,12 +687,29 @@
         }
 
         // ── UI control buttons ───────────────────────────────────
+        // Pseudo-fullscreen for platforms without the Fullscreen API (iOS):
+        // just make the container fill the viewport with a CSS class.
+        function pseudoFsToggle() {
+            var el = document.getElementById('canvas-container');
+            el.classList.toggle('pseudo-fs');
+            var on = el.classList.contains('pseudo-fs');
+            document.getElementById('btn-fullscreen').textContent =
+                on ? '⛶ Fereastra (F)' : '⛶ Fullscreen (F)';
+            setTimeout(resizeCanvas, 60);
+        }
         document.getElementById('btn-fullscreen').addEventListener('click', function() {
             var el = document.getElementById('canvas-container');
-            if (!document.fullscreenElement) {
-                (el.requestFullscreen || el.webkitRequestFullscreen || function(){}).call(el);
+            var real = document.fullscreenEnabled &&
+                       (el.requestFullscreen || el.webkitRequestFullscreen);
+            if (real) {
+                if (!(document.fullscreenElement || document.webkitFullscreenElement)) {
+                    var req = (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+                    if (req && req.catch) req.catch(pseudoFsToggle); // fall back if it rejects
+                } else {
+                    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+                }
             } else {
-                (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
+                pseudoFsToggle(); // iOS and other no-API browsers
             }
         });
         document.addEventListener('fullscreenchange', function() {
@@ -842,32 +871,29 @@
 
         // Audio + haptics must be unlocked inside a real user-gesture handler.
         // On the first interaction we tell the WASM to create the AudioContext
-        // (so it starts "running", not suspended) and resume it. iOS Safari and
-        // Brave are strict about this — creating it earlier gives no sound.
-        var audioUnlocked = false;
+        // and resume it. iOS Safari / Brave (WKWebView) only accept "up" events
+        // (touchend / click), NOT pointerdown/touchstart, as valid audio gestures
+        // — and the context may need resuming on more than one gesture, so we
+        // keep retrying (idempotently) until it actually reports "running".
         function unlockAudio() {
             if (Module && Module._notify_user_gesture) Module._notify_user_gesture();
-            // The context is created synchronously inside the call above
-            if (window._tornadoAudio && window._tornadoAudio.ctx &&
-                    window._tornadoAudio.ctx.state === 'suspended') {
-                window._tornadoAudio.ctx.resume();
-            }
+            var a = window._tornadoAudio;
+            if (a && a.ctx && a.ctx.state === 'suspended') a.ctx.resume();
             // Respect a mute chosen before audio existed
-            if (soundMuted && window._tornadoAudio) {
-                if (window._tornadoAudio.windGain)  window._tornadoAudio.windGain.gain.value = 0;
-                if (window._tornadoAudio.musicGain) window._tornadoAudio.musicGain.gain.value = 0;
+            if (soundMuted && a) {
+                if (a.windGain)  a.windGain.gain.value = 0;
+                if (a.musicGain) a.musicGain.gain.value = 0;
             }
-            if (window._tornadoAudio) audioUnlocked = true;
-            if (audioUnlocked) {
-                window.removeEventListener('pointerdown', unlockAudio);
-                window.removeEventListener('keydown', unlockAudio);
+            if (a && a.ctx && a.ctx.state === 'running') {
                 window.removeEventListener('touchend', unlockAudio);
+                window.removeEventListener('click', unlockAudio);
+                window.removeEventListener('keydown', unlockAudio);
             }
         }
-        // Cover mouse, keyboard and touch; touchend fires reliably on iOS.
-        window.addEventListener('pointerdown', unlockAudio);
-        window.addEventListener('keydown', unlockAudio);
+        // "Up" events are the ones iOS accepts as audio gestures.
         window.addEventListener('touchend', unlockAudio);
+        window.addEventListener('click', unlockAudio);
+        window.addEventListener('keydown', unlockAudio);
 
         Module.setStatus('Se descarca...');
         window.onerror = function(msg, src, line, col, err) {
