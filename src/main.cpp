@@ -138,6 +138,14 @@ struct ScorchMark {
     float radius;
 };
 
+// Floating "+N" score popup that rises and fades at a world position
+struct ScorePopup {
+    glm::vec3 pos;
+    int points;
+    float life;
+    float maxLife;
+};
+
 // Cow that wanders around and flees from the tornado
 struct ChunkAnimal {
     glm::vec3 pos;
@@ -324,6 +332,9 @@ struct AppState {
     // Moving vehicles (reuse the car mesh)
     std::vector<ChunkVehicle> vehicles;
 
+    // Floating score popups
+    std::vector<ScorePopup> scorePopups;
+
     // Ground scorch marks
     std::vector<ScorchMark> scorchMarks;
     float scorchTimer = 0.0f;
@@ -428,6 +439,7 @@ extern "C" {
         app.destroyedObjs.clear();
         app.debrisPieces.clear();
         app.scorchMarks.clear();
+        app.scorePopups.clear();
         app.comboCount = 0;
         app.comboTimer = 0.0f;
         app.comboMultiplier = 1.0f;
@@ -1265,7 +1277,22 @@ static void main_loop() {
         s.comboCount++;
         s.comboTimer      = 2.5f;
         s.comboMultiplier = 1.0f + std::min(s.comboCount / 3.0f, 4.0f);
-        s.score.scorePoints += (int)(newPoints * s.comboMultiplier * scoreMult);
+        int awarded = (int)(newPoints * s.comboMultiplier * scoreMult);
+        s.score.scorePoints += awarded;
+        // Floating "+N" popup above the tornado
+        if (s.scorePopups.size() < 24) {
+            float py = getTerrainHeight(s.tornadoPos.x, s.tornadoPos.y) + 2.0f * s.tornadoScale;
+            s.scorePopups.push_back({glm::vec3(s.tornadoPos.x, py, s.tornadoPos.y),
+                                     awarded, 1.1f, 1.1f});
+        }
+    }
+
+    // ── Update floating score popups (rise + fade) ──
+    for (auto it = s.scorePopups.begin(); it != s.scorePopups.end();) {
+        it->pos.y += 1.5f * dt;
+        it->life  -= dt;
+        if (it->life <= 0.0f) it = s.scorePopups.erase(it);
+        else ++it;
     }
 
     // Wave completion check (Time Attack ignores waves entirely)
@@ -1959,6 +1986,20 @@ static void main_loop() {
                        glm::vec3(1.0f, 0.4f, 0.1f) * comboPulse);
         }
 
+        // ── Floating "+N" score popups (world → screen) ──
+        for (const auto& sp : s.scorePopups) {
+            glm::vec4 clip = proj * view * glm::vec4(sp.pos, 1.0f);
+            if (clip.w <= 0.05f) continue;                 // behind camera
+            float nx = clip.x / clip.w, ny = clip.y / clip.w;
+            if (nx < -1.1f || nx > 1.1f || ny < -1.1f || ny > 1.1f) continue;
+            float a = glm::clamp(sp.life / sp.maxLife, 0.0f, 1.0f);
+            snprintf(buf, sizeof(buf), "+%d", sp.points);
+            float pcw = 0.02f, pch = 0.04f;
+            float w = (float)strlen(buf) * pcw;
+            renderLine(buf, nx - w * 0.5f, ny, pcw, pch,
+                       glm::vec3(1.0f, 0.92f, 0.35f) * a);
+        }
+
         // ── Top-right: wave info / Time Attack clock ──
         if (s.timeAttack) {
             int secs = (int)ceilf(s.timeAttackRemaining);
@@ -2394,6 +2435,7 @@ static void main_loop() {
             s.destroyedObjs.clear();
             s.debrisPieces.clear();
             s.scorchMarks.clear();
+            s.scorePopups.clear();
             s.comboCount = 0;
             s.comboTimer = 0.0f;
             s.comboMultiplier = 1.0f;
