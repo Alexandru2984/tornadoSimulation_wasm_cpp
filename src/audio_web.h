@@ -195,11 +195,23 @@ EM_JS(int, js_getHighScore, (), {
     } catch(e) { return 0; }
 });
 
+// Haptic feedback — a no-op on devices without a vibration motor
+EM_JS(void, js_vibrate, (int ms), {
+    if (navigator.vibrate) { try { navigator.vibrate(ms); } catch(e) {} }
+});
+
 #endif // PLATFORM_EMSCRIPTEN
 
 static void initSound() {
 #ifdef PLATFORM_EMSCRIPTEN
     js_initSound();
+#endif
+}
+static void vibrate(int ms) {
+#ifdef PLATFORM_EMSCRIPTEN
+    js_vibrate(ms);
+#else
+    (void)ms;
 #endif
 }
 static void playDestroySound() {

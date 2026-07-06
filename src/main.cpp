@@ -277,6 +277,9 @@ struct AppState {
     // Camera shake (impact feedback)
     float shakeAmp = 0.0f;
 
+    // Haptics throttle (avoid a constant buzz while destroying)
+    float lastHapticTime = -1.0f;
+
     // Tornado path trail (world XZ positions)
     std::deque<glm::vec2> tornadoTrail;
     float trailSampleTimer = 0.0f;
@@ -991,6 +994,7 @@ static void main_loop() {
             s.gamePhase = GamePhase::GAME_OVER;
             s.victoryTimer = 0.0f;
             playGameOverSound();
+            vibrate(120);
             saveScore(s.score.scorePoints, s.wave.number);
         }
     }
@@ -1005,6 +1009,7 @@ static void main_loop() {
             s.gamePhase = GamePhase::VICTORY;   // reuse the summary screen
             s.victoryTimer = 0.0f;
             playVictorySound();
+            vibrate(60);
             saveScore(s.score.scorePoints, s.wave.number);
         }
     }
@@ -1075,6 +1080,7 @@ static void main_loop() {
                 s.activePowerUps.push_back(ap);
             }
             playPowerUpSound();
+            vibrate(25);
             it = s.powerUps.erase(it);
         } else {
             // Magnet: pull power-ups toward tornado
@@ -1273,6 +1279,8 @@ static void main_loop() {
         s.lastDestroyTime = t;
         playDestroySound();
         s.shakeAmp = std::min(s.shakeAmp + 0.05f + 0.03f * s.tornadoScale, 0.3f);
+        // Short haptic tick, throttled so rapid destruction doesn't buzz nonstop
+        if (t - s.lastHapticTime > 0.18f) { vibrate(12); s.lastHapticTime = t; }
         // Combo: increment, apply multiplier, reset timer
         s.comboCount++;
         s.comboTimer      = 2.5f;
@@ -1302,6 +1310,7 @@ static void main_loop() {
             s.gamePhase = GamePhase::VICTORY;
             s.victoryTimer = 0.0f;
             playVictorySound();
+            vibrate(60);
             saveScore(s.score.scorePoints, s.wave.number);
         } else {
             s.wave.number++;
@@ -1311,6 +1320,7 @@ static void main_loop() {
             s.wave.efScale = std::min(s.wave.number / 2, 5);
             s.gamePhase = GamePhase::WAVE_ANNOUNCE;
             playWaveSound();
+            vibrate(45);
         }
     }
 
@@ -2408,6 +2418,7 @@ static void main_loop() {
         s.victoryTimer = 0.0f;
         s.lastDestroyTime = t;
         playWaveSound();
+        vibrate(45);
     }
 
     // ── Restart on R key (during victory or game over) ──
