@@ -172,6 +172,20 @@ struct ChunkVehicle {
     float turnTimer = 0.0f;    // seconds until the next heading change
 };
 
+// Bird that flies overhead and scatters away from the tornado
+struct ChunkBird {
+    glm::vec3 pos;
+    int chunkX = 0, chunkZ = 0;
+    int genIdx = 0;
+    float health = 1.0f;
+    bool destroyed = false;
+    float yaw = 0.0f;
+    glm::vec2 dir{1.0f, 0.0f};
+    float turnTimer = 0.0f;
+    float flapPhase = 0.0f;    // wing-flap animation offset
+    float baseHeight = 9.0f;   // cruising height above terrain
+};
+
 struct Score {
     int housesDestroyed = 0;
     int treesDestroyed  = 0;
@@ -341,6 +355,10 @@ struct AppState {
     // Moving vehicles (reuse the car mesh)
     std::vector<ChunkVehicle> vehicles;
 
+    // Birds
+    std::vector<ChunkBird> birds;
+    SimpleModel bird;
+
     // Floating score popups
     std::vector<ScorePopup> scorePopups;
 
@@ -445,6 +463,7 @@ extern "C" {
         for (auto& pr : app.chunkProps)  { pr.health = 1.0f; pr.destroyed = false; }
         for (auto& an : app.animals)     { an.health = 1.0f; an.destroyed = false; }
         for (auto& v  : app.vehicles)    { v.health  = 1.0f; v.destroyed  = false; }
+        for (auto& b  : app.birds)       { b.health  = 1.0f; b.destroyed  = false; }
         app.destroyedObjs.clear();
         app.debrisPieces.clear();
         app.scorchMarks.clear();
@@ -804,6 +823,25 @@ static void generateChunk(int cx, int cz) {
         }
         app.vehicles.push_back(v);
     }
+    // Birds (spawn regardless of water — they fly)
+    for (int i = 0; i < BIRDS_PER_CHUNK; ++i) {
+        float px = ox + r01(cRng) * CHUNK_SIZE;
+        float pz = oz + r01(cRng) * CHUNK_SIZE;
+        ChunkBird b;
+        b.pos = glm::vec3(px, getTerrainHeight(px, pz), pz); // y set each frame
+        b.chunkX = cx; b.chunkZ = cz;
+        b.genIdx = i;
+        float a = r01(cRng) * 6.28f;
+        b.dir = glm::vec2(cosf(a), sinf(a));
+        b.yaw = atan2f(-b.dir.y, b.dir.x);
+        b.turnTimer = 2.0f + r01(cRng) * 4.0f;
+        b.flapPhase = r01(cRng) * 6.28f;
+        b.baseHeight = BIRD_MIN_HEIGHT + r01(cRng) * (BIRD_MAX_HEIGHT - BIRD_MIN_HEIGHT);
+        if (app.destroyedObjs.count(makeObjKey(cx, cz, 5, b.genIdx))) {
+            b.destroyed = true; b.health = 0.0f;
+        }
+        app.birds.push_back(b);
+    }
 }
 
 // ── Update loaded chunks around player position ──────────────────────
@@ -864,6 +902,14 @@ static void updateChunks(const glm::vec3& playerPos) {
                 return chunkTooFar(v.chunkX, v.chunkZ);
             }),
         app.vehicles.end());
+
+    // Remove far birds
+    app.birds.erase(
+        std::remove_if(app.birds.begin(), app.birds.end(),
+            [&](const ChunkBird& b) {
+                return chunkTooFar(b.chunkX, b.chunkZ);
+            }),
+        app.birds.end());
 
     // Untrack removed chunks
     for (auto it = app.loadedChunks.begin(); it != app.loadedChunks.end(); ) {
@@ -1295,6 +1341,50 @@ static void main_loop() {
         }
     }
 
+    // ── Birds: fly overhead, scatter from the tornado, get sucked in ──
+    for (auto& b : s.birds) {
+        if (b.destroyed) continue;
+        b.flapPhase += dt * 12.0f;
+        glm::vec2 toTor(s.tornadoPos.x - b.pos.x, s.tornadoPos.y - b.pos.z);
+        float torDist = glm::length(toTor);
+        float scareR = 18.0f * s.tornadoScale;
+        if (torDist < scareR && torDist > 0.01f) {
+            // Steer away from the tornado
+            glm::vec2 away = -toTor / torDist;
+            b.dir = glm::normalize(b.dir + away * 2.0f * dt * 4.0f);
+        } else {
+            b.turnTimer -= dt;
+            if (b.turnTimer <= 0.0f) {
+                float turn = (s.rnd01(s.rng) - 0.5f) * 1.2f;
+                float ca = cosf(turn), sa = sinf(turn);
+                b.dir = glm::vec2(b.dir.x * ca - b.dir.y * sa, b.dir.x * sa + b.dir.y * ca);
+                b.turnTimer = 2.0f + s.rnd01(s.rng) * 4.0f;
+            }
+        }
+        b.pos.x += b.dir.x * BIRD_SPEED * dt;
+        b.pos.z += b.dir.y * BIRD_SPEED * dt;
+        // Cruise at baseHeight above terrain, gentle bobbing
+        float targetY = getTerrainHeight(b.pos.x, b.pos.z) + b.baseHeight
+                        + sinf(b.flapPhase * 0.25f) * 0.6f;
+        b.pos.y += (targetY - b.pos.y) * std::min(1.0f, 3.0f * dt);
+        b.yaw = atan2f(-b.dir.y, b.dir.x);
+
+        if (torDist < effectiveRadius * 1.3f) { // tall funnel reaches the birds
+            b.health -= DAMAGE_RATE * 3.0f * speedMult * dt;
+            if (b.health <= 0.0f) {
+                b.destroyed = true;
+                s.destroyedObjs.insert(makeObjKey(b.chunkX, b.chunkZ, 5, b.genIdx));
+                spawnDebris(b.pos, 8);
+                s.score.propsDestroyed++;
+                s.score.totalDestroyed++;
+                s.wave.destroyed++;
+                destroyedSomething = true;
+                newPoints += 60.0f;
+                s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.25f, TORNADO_MAX_SCALE);
+            }
+        }
+    }
+
     // ── Post-destruction: sounds, combo, scoring, wave check ──
     if (destroyedSomething) {
         s.lastDestroyTime = t;
@@ -1712,6 +1802,30 @@ static void main_loop() {
             glUniform3fv(mu.tint, 1, glm::value_ptr(tint));
             glBindVertexArray(s.car.vao);
             glDrawElements(GL_TRIANGLES, s.car.indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+    }
+
+    // -- Birds (flapping V shapes) --
+    if (!s.birds.empty() && s.bird.vao) {
+        glUniform1i(mu.objType, 5);
+        glUniform1f(mu.enableSwirl, 0.0f);
+        glUniform1i(mu.hasAlbedo, 0);
+        glUniform1f(mu.opacity, 1.0f);
+
+        for (const auto& b : s.birds) {
+            if (b.destroyed) continue;
+            float flap = 0.5f + 0.5f * sinf(b.flapPhase);   // 0..1 wing beat
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), b.pos);
+            model = glm::rotate(model, b.yaw, glm::vec3(0, 1, 0));
+            model = glm::scale(model, glm::vec3(0.9f, 0.6f + 0.7f * flap, 0.9f));
+            glm::mat3 nm = normalMat3(model);
+            glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+            glm::vec3 tint = (b.genIdx % 2 == 0)
+                ? glm::vec3(0.2f, 0.2f, 0.24f) : glm::vec3(0.35f, 0.28f, 0.22f);
+            glUniform3fv(mu.tint, 1, glm::value_ptr(tint));
+            glBindVertexArray(s.bird.vao);
+            glDrawElements(GL_TRIANGLES, s.bird.indexCount, GL_UNSIGNED_INT, nullptr);
         }
     }
 
@@ -2215,6 +2329,12 @@ static void main_loop() {
                 glm::vec2 p = worldToMM(v.pos.x, v.pos.z);
                 if (inMM(p)) renderDot(p, dotS*0.7f, glm::vec3(0.3f, 0.55f, 1.0f), 1.0f);
             }
+            // Birds (small pale dots)
+            for (const auto& b : s.birds) {
+                if (b.destroyed) continue;
+                glm::vec2 p = worldToMM(b.pos.x, b.pos.z);
+                if (inMM(p)) renderDot(p, dotS*0.45f, glm::vec3(0.85f, 0.85f, 0.9f), 1.0f);
+            }
             // Power-ups (bright colored dots)
             for (const auto& pu : s.powerUps) {
                 if (pu.collected) continue;
@@ -2477,6 +2597,7 @@ static void main_loop() {
             for (auto& pr : s.chunkProps) { pr.health = 1.0f; pr.destroyed = false; }
             for (auto& an : s.animals)    { an.health = 1.0f; an.destroyed = false; }
             for (auto& v  : s.vehicles)   { v.health  = 1.0f; v.destroyed  = false; }
+            for (auto& b  : s.birds)      { b.health  = 1.0f; b.destroyed  = false; }
             s.destroyedObjs.clear();
             s.debrisPieces.clear();
             s.scorchMarks.clear();
@@ -2879,6 +3000,52 @@ int main() {
         glVertexAttrib3f(2, 1.0f, 1.0f, 1.0f);
         glBindVertexArray(0);
         app.cow.indexCount = (GLsizei)ci.size();
+    }
+
+    // ══════════════════════════════════════
+    // Bird mesh: small body + two swept wings (a flat V, faces +X)
+    // ══════════════════════════════════════
+    {
+        struct PV { glm::vec3 p; glm::vec3 n; };
+        std::vector<PV> bv;
+        std::vector<unsigned int> bi;
+        auto addTri = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c) {
+            glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
+            unsigned int base = (unsigned int)bv.size();
+            bv.push_back({a, n}); bv.push_back({b, n}); bv.push_back({c, n});
+            bi.push_back(base); bi.push_back(base + 1); bi.push_back(base + 2);
+            // back face (so wings are visible from both sides)
+            unsigned int b2 = (unsigned int)bv.size();
+            bv.push_back({a, -n}); bv.push_back({c, -n}); bv.push_back({b, -n});
+            bi.push_back(b2); bi.push_back(b2 + 1); bi.push_back(b2 + 2);
+        };
+        // Body: a slim tetra-ish diamond along X
+        glm::vec3 nose(0.5f, 0.0f, 0.0f), tail(-0.5f, 0.0f, 0.0f);
+        glm::vec3 top(0.0f, 0.12f, 0.0f), bot(0.0f, -0.08f, 0.0f);
+        addTri(nose, top, tail); addTri(nose, tail, bot);
+        // Wings: swept-back triangles from the shoulders, tips raised (V shape)
+        glm::vec3 shoulderL(0.05f, 0.05f,  0.05f), shoulderR(0.05f, 0.05f, -0.05f);
+        glm::vec3 tipL(-0.15f, 0.28f,  0.75f), tipR(-0.15f, 0.28f, -0.75f);
+        glm::vec3 backL(-0.35f, 0.0f,  0.1f), backR(-0.35f, 0.0f, -0.1f);
+        addTri(shoulderL, tipL, backL);
+        addTri(shoulderR, backR, tipR);
+
+        glGenVertexArrays(1, &app.bird.vao);
+        glGenBuffers(1, &app.bird.vbo);
+        glGenBuffers(1, &app.bird.ebo);
+        glBindVertexArray(app.bird.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, app.bird.vbo);
+        glBufferData(GL_ARRAY_BUFFER, bv.size()*sizeof(PV), bv.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app.bird.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, bi.size()*sizeof(unsigned int), bi.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,p));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,n));
+        glDisableVertexAttribArray(2);
+        glVertexAttrib3f(2, 1.0f, 1.0f, 1.0f);
+        glBindVertexArray(0);
+        app.bird.indexCount = (GLsizei)bi.size();
     }
 
     // ══════════════════════════════════════
@@ -3341,6 +3508,7 @@ int main() {
     if (app.car.vao) { glDeleteBuffers(1,&app.car.vbo); glDeleteBuffers(1,&app.car.ebo); glDeleteVertexArrays(1,&app.car.vao); }
     if (app.pole.vao) { glDeleteBuffers(1,&app.pole.vbo); glDeleteBuffers(1,&app.pole.ebo); glDeleteVertexArrays(1,&app.pole.vao); }
     if (app.cow.vao) { glDeleteBuffers(1,&app.cow.vbo); glDeleteBuffers(1,&app.cow.ebo); glDeleteVertexArrays(1,&app.cow.vao); }
+    if (app.bird.vao) { glDeleteBuffers(1,&app.bird.vbo); glDeleteBuffers(1,&app.bird.ebo); glDeleteVertexArrays(1,&app.bird.vao); }
     glDeleteProgram(app.particleProgram);
     glDeleteProgram(app.skyProgram);
     glDeleteProgram(app.rainProgram);

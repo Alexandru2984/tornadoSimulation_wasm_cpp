@@ -70,6 +70,12 @@ static const float ANIMAL_WANDER_SPEED   = 0.7f;
 static const int   VEHICLES_PER_CHUNK    = 1;
 static const float VEHICLE_SPEED         = 5.0f;
 
+// Birds (fly overhead, scatter from the tornado)
+static const int   BIRDS_PER_CHUNK       = 2;
+static const float BIRD_SPEED            = 4.5f;
+static const float BIRD_MIN_HEIGHT       = 7.0f;   // above the local terrain
+static const float BIRD_MAX_HEIGHT       = 13.0f;
+
 // Tornado decay (shrinks when idle)
 static const float TORNADO_DECAY_RATE    = 0.03f;  // per second
 static const float TORNADO_MIN_SCALE     = 0.4f;   // smallest possible
