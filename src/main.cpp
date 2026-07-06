@@ -173,7 +173,8 @@ struct Wave {
 };
 
 // Power-up types
-enum class PowerUpType { SPEED_BOOST, SIZE_DOUBLE, MAGNET, SHIELD };
+enum class PowerUpType { SPEED_BOOST, SIZE_DOUBLE, MAGNET, SHIELD, SCORE_2X };
+static const int POWERUP_TYPE_COUNT = 5;
 struct PowerUp {
     glm::vec3 pos;
     PowerUpType type;
@@ -947,6 +948,7 @@ static void main_loop() {
     float speedMult = 1.0f;
     float sizeMult  = 1.0f;
     bool hasMagnet = false;
+    float scoreMult = 1.0f;
     for (auto it = s.activePowerUps.begin(); it != s.activePowerUps.end();) {
         it->remaining -= dt;
         if (it->remaining <= 0.0f) {
@@ -955,6 +957,7 @@ static void main_loop() {
             if (it->type == PowerUpType::SPEED_BOOST) speedMult = 1.8f;
             if (it->type == PowerUpType::SIZE_DOUBLE) sizeMult  = 2.0f;
             if (it->type == PowerUpType::MAGNET)      hasMagnet = true;
+            if (it->type == PowerUpType::SCORE_2X)    scoreMult = 2.0f;
             ++it;
         }
     }
@@ -973,7 +976,7 @@ static void main_loop() {
             if (py > WATER_LEVEL) { // don't drop power-ups into lakes
                 PowerUp pu;
                 pu.pos = glm::vec3(px, py, pz);
-                pu.type = (PowerUpType)((int)(s.rnd01(s.rng) * 4.0f) % 4);
+                pu.type = (PowerUpType)((int)(s.rnd01(s.rng) * POWERUP_TYPE_COUNT) % POWERUP_TYPE_COUNT);
                 pu.spawnTime = t;
                 s.powerUps.push_back(pu);
             }
@@ -1167,7 +1170,7 @@ static void main_loop() {
         s.comboCount++;
         s.comboTimer      = 2.5f;
         s.comboMultiplier = 1.0f + std::min(s.comboCount / 3.0f, 4.0f);
-        s.score.scorePoints += (int)(newPoints * s.comboMultiplier);
+        s.score.scorePoints += (int)(newPoints * s.comboMultiplier * scoreMult);
     }
 
     // Wave completion check (Time Attack ignores waves entirely)
@@ -1540,6 +1543,7 @@ static void main_loop() {
                 case PowerUpType::SIZE_DOUBLE: puColor = glm::vec3(1.0f, 0.3f, 0.8f); break; // pink
                 case PowerUpType::MAGNET:      puColor = glm::vec3(0.3f, 0.5f, 1.0f); break; // blue
                 case PowerUpType::SHIELD:      puColor = glm::vec3(1.0f, 0.9f, 0.2f); break; // gold
+                case PowerUpType::SCORE_2X:    puColor = glm::vec3(1.0f, 0.55f, 0.0f); break; // orange
             }
             float bob = sinf(t * POWERUP_BOB_SPEED + pu.spawnTime * 3.0f) * POWERUP_BOB_HEIGHT;
             float spin = t * 2.0f + pu.spawnTime;
@@ -1885,6 +1889,7 @@ static void main_loop() {
                 case PowerUpType::SIZE_DOUBLE: name = "SIZE x2"; puCol = glm::vec3(1.0f, 0.3f, 0.8f); break;
                 case PowerUpType::MAGNET:      name = "MAGNET"; puCol = glm::vec3(0.3f, 0.5f, 1.0f); break;
                 case PowerUpType::SHIELD:      name = "SHIELD"; puCol = glm::vec3(1.0f, 0.9f, 0.2f); break;
+                case PowerUpType::SCORE_2X:    name = "SCOR x2"; puCol = glm::vec3(1.0f, 0.55f, 0.0f); break;
             }
             snprintf(buf, sizeof(buf), "%s %.1fs", name, ap.remaining);
             // Flash when about to expire
