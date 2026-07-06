@@ -1,4 +1,4 @@
-name: Deploy to GitHub Pages
+name: Build, Test & Deploy to GitHub Pages
 
 on:
   push:
@@ -16,16 +16,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Emscripten
-        uses: emscripten-core/setup-emscripten@v1
+        uses: mymindstorm/setup-emsdk@v14
         with:
           version: 3.1.64
 
       - name: Build WASM
         run: |
           emcmake cmake -B build-wasm -S . -DCMAKE_BUILD_TYPE=Release
-          emmake cmake --build build-wasm -j$(nproc)
+          cmake --build build-wasm -j$(nproc)
           # Publish as index.html so GitHub Pages serves it at the root URL
           cp build-wasm/tornado.html build-wasm/index.html
+
+      - name: Run tests
+        run: ctest --test-dir build-wasm --output-on-failure
 
       - name: Deploy to gh-pages
         uses: peaceiris/actions-gh-pages@v4
