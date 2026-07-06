@@ -66,6 +66,10 @@ static const float ANIMAL_FLEE_RADIUS    = 12.0f;  // start running at this dist
 static const float ANIMAL_FLEE_SPEED     = 3.2f;
 static const float ANIMAL_WANDER_SPEED   = 0.7f;
 
+// Moving vehicles (cars that drive around and can be hunted)
+static const int   VEHICLES_PER_CHUNK    = 1;
+static const float VEHICLE_SPEED         = 5.0f;
+
 // Tornado decay (shrinks when idle)
 static const float TORNADO_DECAY_RATE    = 0.03f;  // per second
 static const float TORNADO_MIN_SCALE     = 0.4f;   // smallest possible

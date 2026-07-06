@@ -151,6 +151,18 @@ struct ChunkAnimal {
     float speed = 0.0f;        // current movement speed (for the waddle)
 };
 
+// Car that drives around the world in straight-ish lines
+struct ChunkVehicle {
+    glm::vec3 pos;
+    int chunkX = 0, chunkZ = 0;
+    int genIdx = 0;
+    float health = 1.0f;
+    bool destroyed = false;
+    float yaw = 0.0f;
+    glm::vec2 dir{1.0f, 0.0f};
+    float turnTimer = 0.0f;    // seconds until the next heading change
+};
+
 struct Score {
     int housesDestroyed = 0;
     int treesDestroyed  = 0;
@@ -309,6 +321,9 @@ struct AppState {
     std::vector<ChunkAnimal> animals;
     SimpleModel cow;
 
+    // Moving vehicles (reuse the car mesh)
+    std::vector<ChunkVehicle> vehicles;
+
     // Ground scorch marks
     std::vector<ScorchMark> scorchMarks;
     float scorchTimer = 0.0f;
@@ -409,6 +424,7 @@ extern "C" {
         for (auto& tr : app.chunkTrees)  { tr.health = 1.0f; tr.destroyed = false; }
         for (auto& pr : app.chunkProps)  { pr.health = 1.0f; pr.destroyed = false; }
         for (auto& an : app.animals)     { an.health = 1.0f; an.destroyed = false; }
+        for (auto& v  : app.vehicles)    { v.health  = 1.0f; v.destroyed  = false; }
         app.destroyedObjs.clear();
         app.debrisPieces.clear();
         app.scorchMarks.clear();
@@ -746,6 +762,25 @@ static void generateChunk(int cx, int cz) {
         }
         app.animals.push_back(a);
     }
+    // Moving vehicles
+    for (int i = 0; i < VEHICLES_PER_CHUNK; ++i) {
+        float px = ox + r01(cRng) * CHUNK_SIZE;
+        float pz = oz + r01(cRng) * CHUNK_SIZE;
+        float py = getTerrainHeight(px, pz);
+        if (py < WATER_LEVEL + 0.2f) continue;
+        ChunkVehicle v;
+        v.pos = glm::vec3(px, py, pz);
+        v.chunkX = cx; v.chunkZ = cz;
+        v.genIdx = i;
+        float a = r01(cRng) * 6.28f;
+        v.dir = glm::vec2(cosf(a), sinf(a));
+        v.yaw = atan2f(-v.dir.y, v.dir.x);
+        v.turnTimer = 2.0f + r01(cRng) * 4.0f;
+        if (app.destroyedObjs.count(makeObjKey(cx, cz, 4, v.genIdx))) {
+            v.destroyed = true; v.health = 0.0f;
+        }
+        app.vehicles.push_back(v);
+    }
 }
 
 // ── Update loaded chunks around player position ──────────────────────
@@ -798,6 +833,14 @@ static void updateChunks(const glm::vec3& playerPos) {
                 return chunkTooFar(a.chunkX, a.chunkZ);
             }),
         app.animals.end());
+
+    // Remove far vehicles
+    app.vehicles.erase(
+        std::remove_if(app.vehicles.begin(), app.vehicles.end(),
+            [&](const ChunkVehicle& v) {
+                return chunkTooFar(v.chunkX, v.chunkZ);
+            }),
+        app.vehicles.end());
 
     // Untrack removed chunks
     for (auto it = app.loadedChunks.begin(); it != app.loadedChunks.end(); ) {
@@ -1174,6 +1217,45 @@ static void main_loop() {
         }
     }
 
+    // ── Vehicles: drive around, avoid water, get destroyed ──
+    for (auto& v : s.vehicles) {
+        if (v.destroyed) continue;
+        v.turnTimer -= dt;
+        if (v.turnTimer <= 0.0f) {
+            // Gentle random heading change
+            float turn = (s.rnd01(s.rng) - 0.5f) * 1.5f;
+            float ca = cosf(turn), sa = sinf(turn);
+            v.dir = glm::vec2(v.dir.x * ca - v.dir.y * sa, v.dir.x * sa + v.dir.y * ca);
+            v.turnTimer = 2.0f + s.rnd01(s.rng) * 4.0f;
+        }
+        float nx = v.pos.x + v.dir.x * VEHICLE_SPEED * dt;
+        float nz = v.pos.z + v.dir.y * VEHICLE_SPEED * dt;
+        float nh = getTerrainHeight(nx, nz);
+        if (nh > WATER_LEVEL + 0.15f) {
+            v.pos.x = nx; v.pos.z = nz; v.pos.y = nh;
+            v.yaw = atan2f(-v.dir.y, v.dir.x);
+        } else {
+            v.dir = -v.dir;                 // hit shore/cliff → turn back
+            v.turnTimer = 1.0f + s.rnd01(s.rng) * 2.0f;
+        }
+
+        float vd = glm::length(glm::vec2(v.pos.x - s.tornadoPos.x, v.pos.z - s.tornadoPos.y));
+        if (vd < effectiveRadius) {
+            v.health -= DAMAGE_RATE * 2.5f * speedMult * dt;
+            if (v.health <= 0.0f) {
+                v.destroyed = true;
+                s.destroyedObjs.insert(makeObjKey(v.chunkX, v.chunkZ, 4, v.genIdx));
+                spawnDebris(v.pos, 30);
+                s.score.propsDestroyed++;
+                s.score.totalDestroyed++;
+                s.wave.destroyed++;
+                destroyedSomething = true;
+                newPoints += 90.0f;         // moving target → worth more
+                s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.4f, TORNADO_MAX_SCALE);
+            }
+        }
+    }
+
     // ── Post-destruction: sounds, combo, scoring, wave check ──
     if (destroyedSomething) {
         s.lastDestroyTime = t;
@@ -1538,6 +1620,29 @@ static void main_loop() {
             glUniform3fv(mu.tint, 1, glm::value_ptr(tint));
             glBindVertexArray(s.cow.vao);
             glDrawElements(GL_TRIANGLES, s.cow.indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+    }
+
+    // -- Moving vehicles (reuse the car mesh, blue tint) --
+    if (!s.vehicles.empty() && s.car.vao) {
+        glUniform1i(mu.objType, 5);
+        glUniform1f(mu.enableSwirl, 0.0f);
+        glUniform1i(mu.hasAlbedo, 0);
+        glUniform1f(mu.opacity, 1.0f);
+
+        for (const auto& v : s.vehicles) {
+            if (v.destroyed) continue;
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), v.pos);
+            model = glm::rotate(model, v.yaw, glm::vec3(0, 1, 0));
+            model = glm::scale(model, glm::vec3(0.8f));
+            glm::mat3 nm = normalMat3(model);
+            glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+            glm::vec3 tint = (v.genIdx % 2 == 0)
+                ? glm::vec3(0.15f, 0.35f, 0.75f) : glm::vec3(0.85f, 0.8f, 0.2f);
+            glUniform3fv(mu.tint, 1, glm::value_ptr(tint));
+            glBindVertexArray(s.car.vao);
+            glDrawElements(GL_TRIANGLES, s.car.indexCount, GL_UNSIGNED_INT, nullptr);
         }
     }
 
@@ -2019,6 +2124,12 @@ static void main_loop() {
                 glm::vec2 p = worldToMM(an.pos.x, an.pos.z);
                 if (inMM(p)) renderDot(p, dotS*0.7f, glm::vec3(1.0f, 0.75f, 0.75f), 1.0f);
             }
+            // Vehicles (blue dots)
+            for (const auto& v : s.vehicles) {
+                if (v.destroyed) continue;
+                glm::vec2 p = worldToMM(v.pos.x, v.pos.z);
+                if (inMM(p)) renderDot(p, dotS*0.7f, glm::vec3(0.3f, 0.55f, 1.0f), 1.0f);
+            }
             // Power-ups (bright colored dots)
             for (const auto& pu : s.powerUps) {
                 if (pu.collected) continue;
@@ -2279,6 +2390,7 @@ static void main_loop() {
             for (auto& tr : s.chunkTrees) { tr.health = 1.0f; tr.destroyed = false; }
             for (auto& pr : s.chunkProps) { pr.health = 1.0f; pr.destroyed = false; }
             for (auto& an : s.animals)    { an.health = 1.0f; an.destroyed = false; }
+            for (auto& v  : s.vehicles)   { v.health  = 1.0f; v.destroyed  = false; }
             s.destroyedObjs.clear();
             s.debrisPieces.clear();
             s.scorchMarks.clear();
