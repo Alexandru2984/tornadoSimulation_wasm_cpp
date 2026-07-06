@@ -5,6 +5,7 @@ out vec4 FragColor;
 uniform float uLightningFlash;
 uniform float uTime;
 uniform float uTimeOfDay;
+uniform float uWeather;   // 0 = clear, 1 = full storm
 
 void main() {
     float y = vUV.y;
@@ -49,20 +50,24 @@ void main() {
         sky = mix(horizonColor, midColor, y * 2.0);
     }
 
-    // Animated swirling cloud wisps (stronger during day)
+    // Clear-sky blue takes over during calm daytime weather
+    vec3 clearSky = mix(vec3(0.6, 0.72, 0.92), vec3(0.2, 0.42, 0.78), y);
+    sky = mix(sky, clearSky, (1.0 - uWeather) * dayBright * 0.85);
+
+    // Animated swirling cloud wisps (stronger during day, only when stormy)
     float cloudAlpha = mix(0.3, 1.0, dayBright);
     float cx = vUV.x * 6.0 + uTime * 0.15;
     float cy = vUV.y * 3.0 + uTime * 0.08;
     float cloud = sin(cx) * cos(cy + sin(cx * 0.5)) * 0.5 + 0.5;
     cloud *= smoothstep(0.25, 0.65, y);
-    sky += cloud * vec3(0.03, 0.03, 0.04) * cloudAlpha;
+    sky += cloud * vec3(0.03, 0.03, 0.04) * cloudAlpha * uWeather;
 
-    // Dark swirl center (above tornado)
+    // Dark swirl center (above tornado), only when stormy
     float swirl = sin(vUV.x * 10.0 + uTime * 0.5 + vUV.y * 5.0)
                 * cos(vUV.y * 8.0 - uTime * 0.3 + vUV.x * 3.0) * 0.5 + 0.5;
     float centerDist = length(vUV - vec2(0.5, 0.75));
     float swirlMask = smoothstep(0.45, 0.05, centerDist);
-    sky += swirl * swirlMask * vec3(0.04, 0.04, 0.06);
+    sky += swirl * swirlMask * vec3(0.04, 0.04, 0.06) * uWeather;
 
     // Stars at night
     if (dayBright < 0.3) {

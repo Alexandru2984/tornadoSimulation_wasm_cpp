@@ -56,7 +56,7 @@ struct ParticleUniforms {
     GLint proj=-1, view=-1, model=-1, color=-1, pointScale=-1;
 };
 struct SkyUniforms {
-    GLint lightningFlash=-1, time=-1, timeOfDay=-1;
+    GLint lightningFlash=-1, time=-1, timeOfDay=-1, weather=-1;
 };
 struct RainUniforms {
     GLint proj=-1, view=-1;
@@ -250,6 +250,11 @@ struct AppState {
 
     // Day/night
     float dayTime = 0.25f;  // 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
+
+    // Dynamic weather: 0=clear, 1=full storm — drifts toward a target
+    float weatherIntensity = 0.7f;
+    float weatherTarget    = 0.7f;
+    float weatherTimer     = 12.0f; // seconds until the next target is picked
 
     // Scene models
     SimpleModel house;
@@ -918,6 +923,17 @@ static void main_loop() {
     s.dayTime += DAY_CYCLE_SPEED * dt;
     if (s.dayTime > 1.0f) s.dayTime -= 1.0f;
 
+    // -- Dynamic weather: pick new targets, drift smoothly toward them --
+    s.weatherTimer -= dt;
+    if (s.weatherTimer <= 0.0f) {
+        // Bias toward either fairly clear or fairly stormy, rarely in-between
+        float r = s.rnd01(s.rng);
+        s.weatherTarget = (r < 0.45f) ? (0.05f + s.rnd01(s.rng) * 0.2f)   // clear spell
+                                      : (0.7f  + s.rnd01(s.rng) * 0.3f);  // storm
+        s.weatherTimer = 15.0f + s.rnd01(s.rng) * 20.0f;
+    }
+    s.weatherIntensity += (s.weatherTarget - s.weatherIntensity) * std::min(1.0f, 0.25f * dt);
+
     // -- Tornado follows mouse via ground-plane raycast --
     // Now intersects terrain instead of y=0
     {
@@ -1377,14 +1393,18 @@ static void main_loop() {
         else { ++it; }
     }
 
-    // ── Lightning ──
+    // ── Lightning (only during stormy weather; more frequent when intense) ──
     s.lightning.nextFlash -= dt;
     if (s.lightning.nextFlash <= 0.0f) {
-        s.lightning.intensity = 0.7f + s.rnd01(s.rng) * 0.3f;
-        s.lightning.nextFlash = LIGHTNING_MIN_INTERVAL +
-            s.rnd01(s.rng) * (LIGHTNING_MAX_INTERVAL - LIGHTNING_MIN_INTERVAL);
-        playThunderSound();
-        s.shakeAmp = std::min(s.shakeAmp + 0.04f, 0.3f);
+        if (s.weatherIntensity > 0.45f) {
+            s.lightning.intensity = 0.7f + s.rnd01(s.rng) * 0.3f;
+            playThunderSound();
+            s.shakeAmp = std::min(s.shakeAmp + 0.04f, 0.3f);
+        }
+        // Stormier → shorter gap; scale the interval down as intensity rises
+        float stormScale = 1.0f / std::max(0.3f, s.weatherIntensity);
+        s.lightning.nextFlash = (LIGHTNING_MIN_INTERVAL +
+            s.rnd01(s.rng) * (LIGHTNING_MAX_INTERVAL - LIGHTNING_MIN_INTERVAL)) * stormScale;
     }
     s.lightning.intensity *= expf(-LIGHTNING_DECAY * dt);
     if (s.lightning.intensity < 0.01f) s.lightning.intensity = 0.0f;
@@ -1470,6 +1490,7 @@ static void main_loop() {
     glUniform1f(s.su.lightningFlash, s.lightning.intensity);
     glUniform1f(s.su.time, t);
     glUniform1f(s.su.timeOfDay, s.dayTime);
+    glUniform1f(s.su.weather, s.weatherIntensity);
     glBindVertexArray(s.skyVAO);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glEnable(GL_DEPTH_TEST);
@@ -1905,8 +1926,10 @@ static void main_loop() {
     // ════════════════════════════════
     // RAIN — upload + draw as point sprites
     // ════════════════════════════════
-    if (!s.rainDrops.empty()) {
-        for (int i = 0; i < MAX_RAIN; ++i) {
+    // Rain density follows the weather — clear skies draw almost none
+    int rainDraw = (int)(MAX_RAIN * glm::clamp(s.weatherIntensity, 0.0f, 1.0f));
+    if (!s.rainDrops.empty() && rainDraw > 0) {
+        for (int i = 0; i < rainDraw; ++i) {
             s.rainBuf[i*4+0] = s.rainDrops[i].pos.x;
             s.rainBuf[i*4+1] = s.rainDrops[i].pos.y;
             s.rainBuf[i*4+2] = s.rainDrops[i].pos.z;
@@ -1914,13 +1937,13 @@ static void main_loop() {
         }
         glBindBuffer(GL_ARRAY_BUFFER, s.rainVBO);
         glBufferSubData(GL_ARRAY_BUFFER, 0,
-                        (GLsizeiptr)(s.rainBuf.size() * sizeof(float)), s.rainBuf.data());
+                        (GLsizeiptr)(rainDraw * 4 * sizeof(float)), s.rainBuf.data());
 
         glUseProgram(s.rainProgram);
         glUniformMatrix4fv(s.ru.proj, 1, GL_FALSE, glm::value_ptr(proj));
         glUniformMatrix4fv(s.ru.view, 1, GL_FALSE, glm::value_ptr(view));
         glBindVertexArray(s.rainVAO);
-        glDrawArrays(GL_POINTS, 0, MAX_RAIN);
+        glDrawArrays(GL_POINTS, 0, rainDraw);
         glBindVertexArray(0);
     }
 
@@ -2640,6 +2663,7 @@ int main() {
         app.su.lightningFlash = glGetUniformLocation(p, "uLightningFlash");
         app.su.time           = glGetUniformLocation(p, "uTime");
         app.su.timeOfDay      = glGetUniformLocation(p, "uTimeOfDay");
+        app.su.weather        = glGetUniformLocation(p, "uWeather");
     }
     // Rain shader uniforms
     {
