@@ -960,6 +960,18 @@ EM_JS(void, js_initSound, (), {
     src.start();
     window._tornadoAudio.windGain = gain;
     window._tornadoAudio.windFilter = bp;
+
+    // Low storm drone: two detuned oscillators with a slow swell (LFO)
+    var d1 = ctx.createOscillator(); d1.type = "sawtooth"; d1.frequency.value = 55;
+    var d2 = ctx.createOscillator(); d2.type = "sawtooth"; d2.frequency.value = 55.7;
+    var dlp = ctx.createBiquadFilter(); dlp.type = "lowpass"; dlp.frequency.value = 120;
+    var dg = ctx.createGain(); dg.gain.value = 0.045;
+    var lfo = ctx.createOscillator(); lfo.type = "sine"; lfo.frequency.value = 0.08;
+    var lfoG = ctx.createGain(); lfoG.gain.value = 0.02;
+    lfo.connect(lfoG); lfoG.connect(dg.gain);
+    d1.connect(dlp); d2.connect(dlp); dlp.connect(dg); dg.connect(ctx.destination);
+    d1.start(); d2.start(); lfo.start();
+    window._tornadoAudio.musicGain = dg;
 });
 
 EM_JS(void, js_playDestroySound, (), {

@@ -488,6 +488,9 @@
             if (window._tornadoAudio && window._tornadoAudio.windGain) {
                 window._tornadoAudio.windGain.gain.value = soundMuted ? 0 : 0.15;
             }
+            if (window._tornadoAudio && window._tornadoAudio.musicGain) {
+                window._tornadoAudio.musicGain.gain.value = soundMuted ? 0 : 0.045;
+            }
             saveSettings();
         });
 
