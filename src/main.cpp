@@ -208,8 +208,8 @@ struct Wave {
 };
 
 // Power-up types
-enum class PowerUpType { SPEED_BOOST, SIZE_DOUBLE, MAGNET, SHIELD, SCORE_2X };
-static const int POWERUP_TYPE_COUNT = 5;
+enum class PowerUpType { SPEED_BOOST, SIZE_DOUBLE, MAGNET, SHIELD, SCORE_2X, FREEZE };
+static const int POWERUP_TYPE_COUNT = 6;
 struct PowerUp {
     glm::vec3 pos;
     PowerUpType type;
@@ -1035,10 +1035,13 @@ static void main_loop() {
 
     // ── Tornado decay (shrinks when idle) ──
     bool hasShield = false;
-    for (auto& ap : s.activePowerUps)
+    bool timeFrozen = false;
+    for (auto& ap : s.activePowerUps) {
         if (ap.type == PowerUpType::SHIELD) hasShield = true;
+        if (ap.type == PowerUpType::FREEZE) timeFrozen = true;
+    }
 
-    if (s.gamePhase == GamePhase::PLAYING && !hasShield) {
+    if (s.gamePhase == GamePhase::PLAYING && !hasShield && !timeFrozen) {
         float timeSinceDestroy = t - s.lastDestroyTime;
         if (timeSinceDestroy > TORNADO_DECAY_GRACE) {
             s.tornadoScale -= TORNADO_DECAY_RATE * diffDecayMult() * dt;
@@ -1051,7 +1054,7 @@ static void main_loop() {
     // ── Game over: tornado starved at minimum size for too long ──
     // (disabled in Time Attack — there the only end condition is the clock)
     if (s.gamePhase == GamePhase::PLAYING && !s.timeAttack) {
-        if (s.tornadoScale <= TORNADO_MIN_SCALE + 0.001f && !hasShield)
+        if (s.tornadoScale <= TORNADO_MIN_SCALE + 0.001f && !hasShield && !timeFrozen)
             s.minScaleTimer += dt;
         else
             s.minScaleTimer = 0.0f;
@@ -1253,6 +1256,7 @@ static void main_loop() {
         glm::vec2 toTor(s.tornadoPos.x - an.pos.x, s.tornadoPos.y - an.pos.z);
         float torDist = glm::length(toTor);
 
+        if (timeFrozen) an.speed = 0.0f;
         // Sheep are smaller, twitchier and flee a bit faster than cows
         float skittish = (an.species == 1) ? 1.25f : 1.0f;
         glm::vec2 moveDir;
@@ -1273,16 +1277,18 @@ static void main_loop() {
             moveSpeed = ANIMAL_WANDER_SPEED;
         }
 
-        float nx = an.pos.x + moveDir.x * moveSpeed * dt;
-        float nz = an.pos.z + moveDir.y * moveSpeed * dt;
-        float nh = getTerrainHeight(nx, nz);
-        if (nh > WATER_LEVEL + 0.1f) {                 // refuse to walk into water
-            an.pos.x = nx; an.pos.z = nz; an.pos.y = nh;
-            an.speed = moveSpeed;
-            an.yaw = atan2f(-moveDir.y, moveDir.x);
-        } else {
-            an.wanderDir = -an.wanderDir;              // bounce off the shore
-            an.speed = 0.0f;
+        if (!timeFrozen) {
+            float nx = an.pos.x + moveDir.x * moveSpeed * dt;
+            float nz = an.pos.z + moveDir.y * moveSpeed * dt;
+            float nh = getTerrainHeight(nx, nz);
+            if (nh > WATER_LEVEL + 0.1f) {              // refuse to walk into water
+                an.pos.x = nx; an.pos.z = nz; an.pos.y = nh;
+                an.speed = moveSpeed;
+                an.yaw = atan2f(-moveDir.y, moveDir.x);
+            } else {
+                an.wanderDir = -an.wanderDir;           // bounce off the shore
+                an.speed = 0.0f;
+            }
         }
 
         if (torDist < effectiveRadius) {
@@ -1305,23 +1311,25 @@ static void main_loop() {
     // ── Vehicles: drive around, avoid water, get destroyed ──
     for (auto& v : s.vehicles) {
         if (v.destroyed) continue;
-        v.turnTimer -= dt;
-        if (v.turnTimer <= 0.0f) {
-            // Gentle random heading change
-            float turn = (s.rnd01(s.rng) - 0.5f) * 1.5f;
-            float ca = cosf(turn), sa = sinf(turn);
-            v.dir = glm::vec2(v.dir.x * ca - v.dir.y * sa, v.dir.x * sa + v.dir.y * ca);
-            v.turnTimer = 2.0f + s.rnd01(s.rng) * 4.0f;
-        }
-        float nx = v.pos.x + v.dir.x * VEHICLE_SPEED * dt;
-        float nz = v.pos.z + v.dir.y * VEHICLE_SPEED * dt;
-        float nh = getTerrainHeight(nx, nz);
-        if (nh > WATER_LEVEL + 0.15f) {
-            v.pos.x = nx; v.pos.z = nz; v.pos.y = nh;
-            v.yaw = atan2f(-v.dir.y, v.dir.x);
-        } else {
-            v.dir = -v.dir;                 // hit shore/cliff → turn back
-            v.turnTimer = 1.0f + s.rnd01(s.rng) * 2.0f;
+        if (!timeFrozen) {
+            v.turnTimer -= dt;
+            if (v.turnTimer <= 0.0f) {
+                // Gentle random heading change
+                float turn = (s.rnd01(s.rng) - 0.5f) * 1.5f;
+                float ca = cosf(turn), sa = sinf(turn);
+                v.dir = glm::vec2(v.dir.x * ca - v.dir.y * sa, v.dir.x * sa + v.dir.y * ca);
+                v.turnTimer = 2.0f + s.rnd01(s.rng) * 4.0f;
+            }
+            float nx = v.pos.x + v.dir.x * VEHICLE_SPEED * dt;
+            float nz = v.pos.z + v.dir.y * VEHICLE_SPEED * dt;
+            float nh = getTerrainHeight(nx, nz);
+            if (nh > WATER_LEVEL + 0.15f) {
+                v.pos.x = nx; v.pos.z = nz; v.pos.y = nh;
+                v.yaw = atan2f(-v.dir.y, v.dir.x);
+            } else {
+                v.dir = -v.dir;             // hit shore/cliff → turn back
+                v.turnTimer = 1.0f + s.rnd01(s.rng) * 2.0f;
+            }
         }
 
         float vd = glm::length(glm::vec2(v.pos.x - s.tornadoPos.x, v.pos.z - s.tornadoPos.y));
@@ -1344,30 +1352,32 @@ static void main_loop() {
     // ── Birds: fly overhead, scatter from the tornado, get sucked in ──
     for (auto& b : s.birds) {
         if (b.destroyed) continue;
-        b.flapPhase += dt * 12.0f;
         glm::vec2 toTor(s.tornadoPos.x - b.pos.x, s.tornadoPos.y - b.pos.z);
         float torDist = glm::length(toTor);
-        float scareR = 18.0f * s.tornadoScale;
-        if (torDist < scareR && torDist > 0.01f) {
-            // Steer away from the tornado
-            glm::vec2 away = -toTor / torDist;
-            b.dir = glm::normalize(b.dir + away * 2.0f * dt * 4.0f);
-        } else {
-            b.turnTimer -= dt;
-            if (b.turnTimer <= 0.0f) {
-                float turn = (s.rnd01(s.rng) - 0.5f) * 1.2f;
-                float ca = cosf(turn), sa = sinf(turn);
-                b.dir = glm::vec2(b.dir.x * ca - b.dir.y * sa, b.dir.x * sa + b.dir.y * ca);
-                b.turnTimer = 2.0f + s.rnd01(s.rng) * 4.0f;
+        if (!timeFrozen) {
+            b.flapPhase += dt * 12.0f;
+            float scareR = 18.0f * s.tornadoScale;
+            if (torDist < scareR && torDist > 0.01f) {
+                // Steer away from the tornado
+                glm::vec2 away = -toTor / torDist;
+                b.dir = glm::normalize(b.dir + away * 2.0f * dt * 4.0f);
+            } else {
+                b.turnTimer -= dt;
+                if (b.turnTimer <= 0.0f) {
+                    float turn = (s.rnd01(s.rng) - 0.5f) * 1.2f;
+                    float ca = cosf(turn), sa = sinf(turn);
+                    b.dir = glm::vec2(b.dir.x * ca - b.dir.y * sa, b.dir.x * sa + b.dir.y * ca);
+                    b.turnTimer = 2.0f + s.rnd01(s.rng) * 4.0f;
+                }
             }
+            b.pos.x += b.dir.x * BIRD_SPEED * dt;
+            b.pos.z += b.dir.y * BIRD_SPEED * dt;
+            // Cruise at baseHeight above terrain, gentle bobbing
+            float targetY = getTerrainHeight(b.pos.x, b.pos.z) + b.baseHeight
+                            + sinf(b.flapPhase * 0.25f) * 0.6f;
+            b.pos.y += (targetY - b.pos.y) * std::min(1.0f, 3.0f * dt);
+            b.yaw = atan2f(-b.dir.y, b.dir.x);
         }
-        b.pos.x += b.dir.x * BIRD_SPEED * dt;
-        b.pos.z += b.dir.y * BIRD_SPEED * dt;
-        // Cruise at baseHeight above terrain, gentle bobbing
-        float targetY = getTerrainHeight(b.pos.x, b.pos.z) + b.baseHeight
-                        + sinf(b.flapPhase * 0.25f) * 0.6f;
-        b.pos.y += (targetY - b.pos.y) * std::min(1.0f, 3.0f * dt);
-        b.yaw = atan2f(-b.dir.y, b.dir.x);
 
         if (torDist < effectiveRadius * 1.3f) { // tall funnel reaches the birds
             b.health -= DAMAGE_RATE * 3.0f * speedMult * dt;
@@ -1845,6 +1855,7 @@ static void main_loop() {
                 case PowerUpType::MAGNET:      puColor = glm::vec3(0.3f, 0.5f, 1.0f); break; // blue
                 case PowerUpType::SHIELD:      puColor = glm::vec3(1.0f, 0.9f, 0.2f); break; // gold
                 case PowerUpType::SCORE_2X:    puColor = glm::vec3(1.0f, 0.55f, 0.0f); break; // orange
+                case PowerUpType::FREEZE:      puColor = glm::vec3(0.5f, 0.9f, 1.0f); break; // ice cyan
             }
             float bob = sinf(t * POWERUP_BOB_SPEED + pu.spawnTime * 3.0f) * POWERUP_BOB_HEIGHT;
             float spin = t * 2.0f + pu.spawnTime;
@@ -2207,6 +2218,7 @@ static void main_loop() {
                 case PowerUpType::MAGNET:      name = "MAGNET"; puCol = glm::vec3(0.3f, 0.5f, 1.0f); break;
                 case PowerUpType::SHIELD:      name = "SHIELD"; puCol = glm::vec3(1.0f, 0.9f, 0.2f); break;
                 case PowerUpType::SCORE_2X:    name = "SCOR x2"; puCol = glm::vec3(1.0f, 0.55f, 0.0f); break;
+                case PowerUpType::FREEZE:      name = "INGHET"; puCol = glm::vec3(0.5f, 0.9f, 1.0f); break;
             }
             snprintf(buf, sizeof(buf), "%s %.1fs", name, ap.remaining);
             // Flash when about to expire
@@ -2527,6 +2539,12 @@ static void main_loop() {
                 renderLine(restart, -rw * 0.5f, -0.24f, smCW, smCH,
                            glm::vec3(0.6f, 0.8f, 0.6f) * blink);
             }
+        }
+
+        // ── Time-freeze icy tint ──
+        if (timeFrozen) {
+            float pulse = 0.10f + 0.04f * sinf(t * 3.0f);
+            renderQuadA(-1.0f, -1.0f, 1.0f, 1.0f, glm::vec3(0.5f, 0.8f, 1.0f), pulse);
         }
 
         // ── Lightning full-screen flash ──
