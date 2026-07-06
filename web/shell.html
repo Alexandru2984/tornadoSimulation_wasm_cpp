@@ -241,6 +241,7 @@
         <button class="ctrl-btn" id="btn-pause">⏸ Pauza (P)</button>
         <button class="ctrl-btn" id="btn-mute">🔊 Sunet (M)</button>
         <button class="ctrl-btn" id="btn-quality">⚙ Calitate: Ridicat</button>
+        <button class="ctrl-btn" id="btn-difficulty">🎯 Dificultate: Normal</button>
         <button class="ctrl-btn" id="btn-restart">↺ Restart (R)</button>
         <button class="ctrl-btn" id="btn-timeattack">⏱ Time Attack</button>
         <button class="ctrl-btn" id="btn-scores">🏆 Scoruri</button>
@@ -302,6 +303,11 @@
                 document.getElementById('btn-quality').textContent = qualityLabels[q];
                 if (Module._set_quality) Module._set_quality(q);
                 if (saved.muted) document.getElementById('btn-mute').click();
+                var d = (typeof saved.difficulty === 'number' && saved.difficulty >= 0 && saved.difficulty <= 2)
+                        ? saved.difficulty : 1;
+                difficulty = d;
+                document.getElementById('btn-difficulty').textContent = difficultyLabels[d];
+                if (Module._set_difficulty) Module._set_difficulty(d);
             },
             monitorRunDependencies: function(left) {
                 if (left === 0) {
@@ -476,9 +482,18 @@
         function saveSettings() {
             try {
                 localStorage.setItem('tornado3d_settings',
-                    JSON.stringify({quality: qualityLevel, muted: soundMuted}));
+                    JSON.stringify({quality: qualityLevel, muted: soundMuted, difficulty: difficulty}));
             } catch(e) {}
         }
+
+        var difficulty = 1;
+        var difficultyLabels = ['🎯 Dificultate: Usor', '🎯 Dificultate: Normal', '🎯 Dificultate: Greu'];
+        document.getElementById('btn-difficulty').addEventListener('click', function() {
+            difficulty = (difficulty + 1) % 3;
+            this.textContent = difficultyLabels[difficulty];
+            if (Module._set_difficulty) Module._set_difficulty(difficulty);
+            saveSettings();
+        });
 
         // ── Mobile menu toggle ───────────────────────────────────
         document.getElementById('menu-toggle').addEventListener('click', function() {

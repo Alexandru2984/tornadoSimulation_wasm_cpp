@@ -354,6 +354,13 @@ static bool  g_touchLookActive = false;
 // Runtime-adjustable state (can be set from JS)
 static int   g_activeParticles = MAX_PARTICLES;  // quality preset control
 static bool  g_paused          = false;
+static int   g_difficulty      = 1;              // 0=easy, 1=normal, 2=hard
+
+// Per-difficulty multipliers (index by g_difficulty)
+static float diffDecayMult()   { const float v[3] = {0.6f, 1.0f, 1.5f};  return v[std::clamp(g_difficulty,0,2)]; }
+static float diffDamageMult()  { const float v[3] = {1.3f, 1.0f, 0.85f}; return v[std::clamp(g_difficulty,0,2)]; }
+static float diffFadeMult()    { const float v[3] = {1.5f, 1.0f, 0.7f};  return v[std::clamp(g_difficulty,0,2)]; }
+static float diffPowerupMult() { const float v[3] = {1.4f, 1.0f, 0.7f}; return v[std::clamp(g_difficulty,0,2)]; }
 
 #ifdef PLATFORM_EMSCRIPTEN
 extern "C" {
@@ -380,6 +387,9 @@ extern "C" {
     }
     EMSCRIPTEN_KEEPALIVE void set_paused(int paused) {
         g_paused = (paused != 0);
+    }
+    EMSCRIPTEN_KEEPALIVE void set_difficulty(int level) {
+        g_difficulty = std::clamp(level, 0, 2);
     }
     EMSCRIPTEN_KEEPALIVE void restart_game() {
         // Allow restart from any game phase, not just VICTORY
@@ -908,7 +918,7 @@ static void main_loop() {
     if (s.gamePhase == GamePhase::PLAYING && !hasShield) {
         float timeSinceDestroy = t - s.lastDestroyTime;
         if (timeSinceDestroy > TORNADO_DECAY_GRACE) {
-            s.tornadoScale -= TORNADO_DECAY_RATE * dt;
+            s.tornadoScale -= TORNADO_DECAY_RATE * diffDecayMult() * dt;
             if (s.tornadoScale < TORNADO_MIN_SCALE) {
                 s.tornadoScale = TORNADO_MIN_SCALE;
             }
@@ -922,7 +932,7 @@ static void main_loop() {
             s.minScaleTimer += dt;
         else
             s.minScaleTimer = 0.0f;
-        if (s.minScaleTimer >= GAMEOVER_FADE_TIME) {
+        if (s.minScaleTimer >= GAMEOVER_FADE_TIME * diffFadeMult()) {
             s.gamePhase = GamePhase::GAME_OVER;
             s.victoryTimer = 0.0f;
             playGameOverSound();
@@ -961,12 +971,15 @@ static void main_loop() {
             ++it;
         }
     }
+    // Difficulty scales destruction speed (speedMult only feeds damage rates)
+    speedMult *= diffDamageMult();
 
     // ── Power-up spawning ──
     if (s.gamePhase == GamePhase::PLAYING) {
         s.powerUpSpawnTimer -= dt;
         if (s.powerUpSpawnTimer <= 0.0f && (int)s.powerUps.size() < MAX_POWERUPS) {
-            s.powerUpSpawnTimer = POWERUP_SPAWN_INTERVAL;
+            // Easier difficulties hand out power-ups more often
+            s.powerUpSpawnTimer = POWERUP_SPAWN_INTERVAL / diffPowerupMult();
             // Spawn near player but not too close
             float angle = s.rnd01(s.rng) * 6.28f;
             float dist  = 15.0f + s.rnd01(s.rng) * 25.0f;
