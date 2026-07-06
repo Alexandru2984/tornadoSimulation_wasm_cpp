@@ -814,15 +814,34 @@
             }
         });
 
-        // Resume AudioContext on first user interaction (browsers suspend it before a gesture)
-        function resumeAudioCtx() {
+        // Audio + haptics must be unlocked inside a real user-gesture handler.
+        // On the first interaction we tell the WASM to create the AudioContext
+        // (so it starts "running", not suspended) and resume it. iOS Safari and
+        // Brave are strict about this — creating it earlier gives no sound.
+        var audioUnlocked = false;
+        function unlockAudio() {
+            if (Module && Module._notify_user_gesture) Module._notify_user_gesture();
+            // The context is created synchronously inside the call above
             if (window._tornadoAudio && window._tornadoAudio.ctx &&
                     window._tornadoAudio.ctx.state === 'suspended') {
                 window._tornadoAudio.ctx.resume();
             }
+            // Respect a mute chosen before audio existed
+            if (soundMuted && window._tornadoAudio) {
+                if (window._tornadoAudio.windGain)  window._tornadoAudio.windGain.gain.value = 0;
+                if (window._tornadoAudio.musicGain) window._tornadoAudio.musicGain.gain.value = 0;
+            }
+            if (window._tornadoAudio) audioUnlocked = true;
+            if (audioUnlocked) {
+                window.removeEventListener('pointerdown', unlockAudio);
+                window.removeEventListener('keydown', unlockAudio);
+                window.removeEventListener('touchend', unlockAudio);
+            }
         }
-        document.getElementById('canvas').addEventListener('click', resumeAudioCtx);
-        document.getElementById('canvas').addEventListener('touchstart', resumeAudioCtx, {passive: true});
+        // Cover mouse, keyboard and touch; touchend fires reliably on iOS.
+        window.addEventListener('pointerdown', unlockAudio);
+        window.addEventListener('keydown', unlockAudio);
+        window.addEventListener('touchend', unlockAudio);
 
         Module.setStatus('Se descarca...');
         window.onerror = function(msg, src, line, col, err) {

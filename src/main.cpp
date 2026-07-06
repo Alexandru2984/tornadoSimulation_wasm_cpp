@@ -451,6 +451,11 @@ extern "C" {
     EMSCRIPTEN_KEEPALIVE void set_difficulty(int level) {
         g_difficulty = std::clamp(level, 0, 2);
     }
+    // Called from JS on the first user gesture: unlock audio + haptics.
+    EMSCRIPTEN_KEEPALIVE void notify_user_gesture() {
+        g_userInteracted = true;
+        if (!app.soundInitialized) { initSound(); app.soundInitialized = true; }
+    }
     EMSCRIPTEN_KEEPALIVE void restart_game() {
         // Allow restart from any game phase, not just VICTORY
         app.score = Score{};
@@ -1030,8 +1035,9 @@ static void main_loop() {
         }
     }
 
-    // ── Initialize sound on first frame (needs user gesture context) ──
-    if (!s.soundInitialized) { initSound(); s.soundInitialized = true; }
+    // Audio is initialized from JS on the first user gesture (see
+    // notify_user_gesture), not here — creating an AudioContext without a
+    // gesture is blocked by browsers and spams the console.
 
     // ── Wave system logic ──
     if (s.gamePhase == GamePhase::WAVE_ANNOUNCE) {

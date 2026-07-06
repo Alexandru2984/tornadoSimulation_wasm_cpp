@@ -10,6 +10,10 @@
 // Runtime mute flag (set from JS via toggle_sound)
 static bool g_soundMuted = false;
 
+// Becomes true after the first real user gesture. Browsers forbid starting an
+// AudioContext or vibrating before then, so we gate both on it.
+static bool g_userInteracted = false;
+
 // ── Sound effects (Web Audio API via Emscripten) ─────────────────────
 #ifdef PLATFORM_EMSCRIPTEN
 
@@ -226,7 +230,7 @@ static void initSound() {
 }
 static void vibrate(int ms) {
 #ifdef PLATFORM_EMSCRIPTEN
-    js_vibrate(ms);
+    if (g_userInteracted) js_vibrate(ms); // browsers block vibrate before a tap
 #else
     (void)ms;
 #endif
