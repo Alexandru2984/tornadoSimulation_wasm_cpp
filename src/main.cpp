@@ -357,6 +357,7 @@ struct AppState {
     Wave wave;
     float victoryTimer = 0.0f;   // also reused as the game-over screen timer
     float minScaleTimer = 0.0f;  // time spent at minimum tornado size
+    bool endlessMode = false;    // keep spawning waves after wave 10
 
     // Power-ups
     std::vector<PowerUp> powerUps;
@@ -480,6 +481,7 @@ extern "C" {
         app.gamePhase = GamePhase::WAVE_ANNOUNCE;
         app.victoryTimer = 0.0f;
         app.minScaleTimer = 0.0f;
+        app.endlessMode = false;
         app.activePowerUps.clear();
         app.powerUps.clear();
         app.powerUpSpawnTimer = 5.0f;
@@ -1511,7 +1513,7 @@ static void main_loop() {
     // Wave completion check
     if (s.gamePhase == GamePhase::PLAYING &&
         s.wave.destroyed >= s.wave.target) {
-        if (s.wave.number >= TOTAL_WAVES) {
+        if (s.wave.number >= TOTAL_WAVES && !s.endlessMode) {
             s.gamePhase = GamePhase::VICTORY;
             s.victoryTimer = 0.0f;
             playVictorySound();
@@ -2168,8 +2170,12 @@ static void main_loop() {
         }
 
         // ── Top-right: wave info ──
-        snprintf(buf, sizeof(buf), "VAL %d/%d  EF%d",
-                 s.wave.number, TOTAL_WAVES, s.wave.efScale);
+        if (s.endlessMode)
+            snprintf(buf, sizeof(buf), "VAL %d  EF%d  INFINIT",
+                     s.wave.number, s.wave.efScale);
+        else
+            snprintf(buf, sizeof(buf), "VAL %d/%d  EF%d",
+                     s.wave.number, TOTAL_WAVES, s.wave.efScale);
         renderLine(buf, 0.52f, 0.92f, cw, ch, glm::vec3(0.5f, 0.9f, 1.0f));
 
         // Wave progress bar
@@ -2433,6 +2439,10 @@ static void main_loop() {
                 float rw = (float)strlen(restart) * smCW;
                 renderLine(restart, -rw * 0.5f, -0.30f, smCW, smCH,
                            glm::vec3(0.6f, 0.8f, 0.6f) * blink);
+                const char* endless = "APASA E PENTRU MOD INFINIT";
+                float ew = (float)strlen(endless) * smCW * 0.85f;
+                renderLine(endless, -ew * 0.5f, -0.38f, smCW * 0.85f, smCH * 0.85f,
+                           glm::vec3(0.9f, 0.6f, 1.0f) * blink);
             }
         }
 
@@ -2515,6 +2525,21 @@ static void main_loop() {
         glEnable(GL_DEPTH_TEST);
     }
 
+    // ── Endless mode on E key (during victory) ──
+    if (s.gamePhase == GamePhase::VICTORY &&
+        glfwGetKey(s.window, GLFW_KEY_E) == GLFW_PRESS) {
+        s.endlessMode = true;
+        s.wave.number++;
+        s.wave.target = WAVE_BASE_TARGET + (s.wave.number - 1) * 3;
+        s.wave.destroyed = 0;
+        s.wave.announceTimer = 0.0f;
+        s.wave.efScale = 5;
+        s.gamePhase = GamePhase::WAVE_ANNOUNCE;
+        s.victoryTimer = 0.0f;
+        s.lastDestroyTime = t;
+        playWaveSound();
+    }
+
     // ── Restart on R key (during victory or game over) ──
     if (s.gamePhase == GamePhase::VICTORY || s.gamePhase == GamePhase::GAME_OVER) {
         if (glfwGetKey(s.window, GLFW_KEY_R) == GLFW_PRESS) {
@@ -2526,6 +2551,7 @@ static void main_loop() {
             s.gamePhase = GamePhase::WAVE_ANNOUNCE;
             s.victoryTimer = 0.0f;
             s.minScaleTimer = 0.0f;
+            s.endlessMode = false;
             s.activePowerUps.clear();
             s.powerUps.clear();
             s.powerUpSpawnTimer = 5.0f;
