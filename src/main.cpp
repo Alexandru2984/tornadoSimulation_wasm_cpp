@@ -95,7 +95,13 @@ static const int   TREES_PER_CHUNK       = 5;
 static const int   FENCES_PER_CHUNK      = 4;
 static const int   CARS_PER_CHUNK        = 1;
 static const int   POLES_PER_CHUNK       = 2;
+static const int   ANIMALS_PER_CHUNK     = 2;
 static const int   MAX_SCORCH_MARKS      = 200;
+
+// Animals (cows that flee from the tornado)
+static const float ANIMAL_FLEE_RADIUS    = 12.0f;  // start running at this distance
+static const float ANIMAL_FLEE_SPEED     = 3.2f;
+static const float ANIMAL_WANDER_SPEED   = 0.7f;
 
 // Tornado decay (shrinks when idle)
 static const float TORNADO_DECAY_RATE    = 0.03f;  // per second
@@ -222,6 +228,19 @@ struct ChunkProp {
 struct ScorchMark {
     glm::vec3 pos;
     float radius;
+};
+
+// Cow that wanders around and flees from the tornado
+struct ChunkAnimal {
+    glm::vec3 pos;
+    int chunkX = 0, chunkZ = 0;
+    int genIdx = 0;
+    float health = 1.0f;
+    bool destroyed = false;
+    float yaw = 0.0f;          // facing direction
+    glm::vec2 wanderDir{1.0f, 0.0f};
+    float wanderTimer = 0.0f;  // seconds until a new wander direction
+    float speed = 0.0f;        // current movement speed (for the waddle)
 };
 
 struct Score {
@@ -374,6 +393,10 @@ struct AppState {
     SimpleModel car;
     SimpleModel pole;
 
+    // Animals
+    std::vector<ChunkAnimal> animals;
+    SimpleModel cow;
+
     // Ground scorch marks
     std::vector<ScorchMark> scorchMarks;
     float scorchTimer = 0.0f;
@@ -463,6 +486,7 @@ extern "C" {
         for (auto& h  : app.houses)      { h.health  = 1.0f; h.destroyed  = false; }
         for (auto& tr : app.chunkTrees)  { tr.health = 1.0f; tr.destroyed = false; }
         for (auto& pr : app.chunkProps)  { pr.health = 1.0f; pr.destroyed = false; }
+        for (auto& an : app.animals)     { an.health = 1.0f; an.destroyed = false; }
         app.destroyedObjs.clear();
         app.debrisPieces.clear();
         app.scorchMarks.clear();
@@ -825,6 +849,24 @@ static void generateChunk(int cx, int cz) {
         }
         app.chunkProps.push_back(p);
     }
+    // Animals (cows)
+    for (int i = 0; i < ANIMALS_PER_CHUNK; ++i) {
+        float px = ox + r01(cRng) * CHUNK_SIZE;
+        float pz = oz + r01(cRng) * CHUNK_SIZE;
+        float py = getTerrainHeight(px, pz);
+        if (py < WATER_LEVEL + 0.15f) continue;
+        ChunkAnimal a;
+        a.pos = glm::vec3(px, py, pz);
+        a.chunkX = cx; a.chunkZ = cz;
+        a.genIdx = i;
+        a.yaw = r01(cRng) * 6.28f;
+        a.wanderDir = glm::vec2(cosf(a.yaw), sinf(a.yaw));
+        a.wanderTimer = 1.0f + r01(cRng) * 3.0f;
+        if (app.destroyedObjs.count(makeObjKey(cx, cz, 3, a.genIdx))) {
+            a.destroyed = true; a.health = 0.0f;
+        }
+        app.animals.push_back(a);
+    }
 }
 
 // ── Update loaded chunks around player position ──────────────────────
@@ -869,6 +911,14 @@ static void updateChunks(const glm::vec3& playerPos) {
                 return chunkTooFar(p.chunkX, p.chunkZ);
             }),
         app.chunkProps.end());
+
+    // Remove far animals
+    app.animals.erase(
+        std::remove_if(app.animals.begin(), app.animals.end(),
+            [&](const ChunkAnimal& a) {
+                return chunkTooFar(a.chunkX, a.chunkZ);
+            }),
+        app.animals.end());
 
     // Untrack removed chunks
     for (auto it = app.loadedChunks.begin(); it != app.loadedChunks.end(); ) {
@@ -999,6 +1049,22 @@ EM_JS(void, js_playVictorySound, (), {
     }
 });
 
+EM_JS(void, js_playMooSound, (), {
+    var a = window._tornadoAudio; if (!a) return;
+    var ctx = a.ctx;
+    var osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(180, ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(120, ctx.currentTime + 0.35);
+    var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 500;
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, ctx.currentTime);
+    g.gain.linearRampToValueAtTime(0.22, ctx.currentTime + 0.06);
+    g.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.4);
+    osc.connect(lp); lp.connect(g); g.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.4);
+});
+
 EM_JS(void, js_playGameOverSound, (), {
     var a = window._tornadoAudio; if (!a) return;
     var ctx = a.ctx;
@@ -1075,6 +1141,11 @@ static void playVictorySound() {
 static void playGameOverSound() {
 #ifdef PLATFORM_EMSCRIPTEN
     if (!g_soundMuted) js_playGameOverSound();
+#endif
+}
+static void playMooSound() {
+#ifdef PLATFORM_EMSCRIPTEN
+    if (!g_soundMuted) js_playMooSound();
 #endif
 }
 static void saveScore(int score, int wave) {
@@ -1367,6 +1438,59 @@ static void main_loop() {
                 // car=50pts, fence=20pts, pole=15pts
                 float propPts = (pr.propType == 1) ? 50.0f : (pr.propType == 0 ? 20.0f : 15.0f);
                 newPoints += propPts;
+                s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.3f, TORNADO_MAX_SCALE);
+            }
+        }
+    }
+
+    // ── Animals: wander, flee from the tornado, get destroyed ──
+    for (auto& an : s.animals) {
+        if (an.destroyed) continue;
+        glm::vec2 toTor(s.tornadoPos.x - an.pos.x, s.tornadoPos.y - an.pos.z);
+        float torDist = glm::length(toTor);
+
+        glm::vec2 moveDir;
+        float moveSpeed;
+        float panicR = ANIMAL_FLEE_RADIUS * s.tornadoScale;
+        if (torDist < panicR && torDist > 0.01f) {
+            moveDir = -toTor / torDist;                // run away from the tornado
+            float panic = 1.0f - torDist / panicR;     // faster when it is closer
+            moveSpeed = ANIMAL_FLEE_SPEED * (0.6f + 0.8f * panic);
+        } else {
+            an.wanderTimer -= dt;
+            if (an.wanderTimer <= 0.0f) {
+                float wa = s.rnd01(s.rng) * 6.28f;
+                an.wanderDir = glm::vec2(cosf(wa), sinf(wa));
+                an.wanderTimer = 2.0f + s.rnd01(s.rng) * 4.0f;
+            }
+            moveDir = an.wanderDir;
+            moveSpeed = ANIMAL_WANDER_SPEED;
+        }
+
+        float nx = an.pos.x + moveDir.x * moveSpeed * dt;
+        float nz = an.pos.z + moveDir.y * moveSpeed * dt;
+        float nh = getTerrainHeight(nx, nz);
+        if (nh > WATER_LEVEL + 0.1f) {                 // refuse to walk into water
+            an.pos.x = nx; an.pos.z = nz; an.pos.y = nh;
+            an.speed = moveSpeed;
+            an.yaw = atan2f(-moveDir.y, moveDir.x);
+        } else {
+            an.wanderDir = -an.wanderDir;              // bounce off the shore
+            an.speed = 0.0f;
+        }
+
+        if (torDist < effectiveRadius) {
+            an.health -= DAMAGE_RATE * 4.0f * speedMult * dt;
+            if (an.health <= 0.0f) {
+                an.destroyed = true;
+                s.destroyedObjs.insert(makeObjKey(an.chunkX, an.chunkZ, 3, an.genIdx));
+                spawnDebris(an.pos, 10);
+                s.score.propsDestroyed++;
+                s.score.totalDestroyed++;
+                s.wave.destroyed++;
+                destroyedSomething = true;
+                newPoints += 75.0f;
+                playMooSound();
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.3f, TORNADO_MAX_SCALE);
             }
         }
@@ -1709,6 +1833,33 @@ static void main_loop() {
             glUniform1f(mu.opacity, 1.0f);
             glBindVertexArray(mdl->vao);
             glDrawElements(GL_TRIANGLES, mdl->indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+    }
+
+    // -- Animals (cows) --
+    if (!s.animals.empty() && s.cow.vao) {
+        glUniform1i(mu.objType, 5);
+        glUniform1f(mu.enableSwirl, 0.0f);
+        glUniform1i(mu.hasAlbedo, 0);
+        glUniform1f(mu.opacity, 1.0f);
+
+        for (const auto& an : s.animals) {
+            if (an.destroyed) continue;
+            // Waddle bob while moving
+            float bob = (an.speed > 0.1f)
+                ? fabsf(sinf(t * 9.0f + (float)an.genIdx * 2.1f)) * 0.05f : 0.0f;
+            glm::mat4 model = glm::translate(glm::mat4(1.0f),
+                                  glm::vec3(an.pos.x, an.pos.y + bob, an.pos.z));
+            model = glm::rotate(model, an.yaw, glm::vec3(0, 1, 0));
+            glm::mat3 nm = normalMat3(model);
+            glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
+            // Alternate white and brown cows
+            glm::vec3 tint = (an.genIdx % 2 == 0)
+                ? glm::vec3(0.92f, 0.90f, 0.85f) : glm::vec3(0.55f, 0.38f, 0.25f);
+            glUniform3fv(mu.tint, 1, glm::value_ptr(tint));
+            glBindVertexArray(s.cow.vao);
+            glDrawElements(GL_TRIANGLES, s.cow.indexCount, GL_UNSIGNED_INT, nullptr);
         }
     }
 
@@ -2153,6 +2304,12 @@ static void main_loop() {
                 glm::vec2 p = worldToMM(pr.pos.x, pr.pos.z);
                 if (inMM(p)) renderDot(p, dotS*0.5f, glm::vec3(0.5f, 0.5f, 0.5f), 1.0f);
             }
+            // Animals (pinkish dots)
+            for (const auto& an : s.animals) {
+                if (an.destroyed) continue;
+                glm::vec2 p = worldToMM(an.pos.x, an.pos.z);
+                if (inMM(p)) renderDot(p, dotS*0.7f, glm::vec3(1.0f, 0.75f, 0.75f), 1.0f);
+            }
             // Power-ups (bright colored dots)
             for (const auto& pu : s.powerUps) {
                 if (pu.collected) continue;
@@ -2375,6 +2532,7 @@ static void main_loop() {
             for (auto& h : s.houses)      { h.health = 1.0f; h.destroyed = false; }
             for (auto& tr : s.chunkTrees) { tr.health = 1.0f; tr.destroyed = false; }
             for (auto& pr : s.chunkProps) { pr.health = 1.0f; pr.destroyed = false; }
+            for (auto& an : s.animals)    { an.health = 1.0f; an.destroyed = false; }
             s.destroyedObjs.clear();
             s.debrisPieces.clear();
             s.scorchMarks.clear();
@@ -2802,6 +2960,55 @@ int main() {
         makeBox(app.car, 0.6f, 0.45f, 0.3f, glm::vec3(0.7f, 0.15f, 0.1f));
         // Pole: thin tall
         makeBox(app.pole, 0.05f, 2.5f, 0.05f, glm::vec3(0.5f, 0.5f, 0.55f));
+    }
+
+    // ══════════════════════════════════════
+    // Cow mesh: body + head + legs (faces +X)
+    // ══════════════════════════════════════
+    {
+        struct PV { glm::vec3 p; glm::vec3 n; };
+        std::vector<PV> cv;
+        std::vector<unsigned int> ci;
+        auto addBox = [&](glm::vec3 c, glm::vec3 h) { // center + half-extents
+            glm::vec3 v[8] = {
+                {c.x-h.x,c.y-h.y,c.z-h.z},{c.x+h.x,c.y-h.y,c.z-h.z},
+                {c.x+h.x,c.y-h.y,c.z+h.z},{c.x-h.x,c.y-h.y,c.z+h.z},
+                {c.x-h.x,c.y+h.y,c.z-h.z},{c.x+h.x,c.y+h.y,c.z-h.z},
+                {c.x+h.x,c.y+h.y,c.z+h.z},{c.x-h.x,c.y+h.y,c.z+h.z}
+            };
+            auto face = [&](int a, int b, int cc, int d, glm::vec3 n) {
+                unsigned int base = (unsigned int)cv.size();
+                cv.push_back({v[a],n}); cv.push_back({v[b],n});
+                cv.push_back({v[cc],n}); cv.push_back({v[d],n});
+                ci.insert(ci.end(), {base, base+1, base+2, base, base+2, base+3});
+            };
+            face(3,2,1,0,{0,-1,0}); face(4,5,6,7,{0,1,0});
+            face(0,1,5,4,{0,0,-1}); face(1,2,6,5,{1,0,0});
+            face(2,3,7,6,{0,0,1});  face(3,0,4,7,{-1,0,0});
+        };
+        addBox(glm::vec3(0.0f, 0.45f, 0.0f), glm::vec3(0.45f, 0.22f, 0.22f)); // body
+        addBox(glm::vec3(0.50f, 0.64f, 0.0f), glm::vec3(0.14f, 0.13f, 0.12f)); // head
+        addBox(glm::vec3( 0.30f, 0.12f,  0.13f), glm::vec3(0.05f, 0.12f, 0.05f)); // legs
+        addBox(glm::vec3( 0.30f, 0.12f, -0.13f), glm::vec3(0.05f, 0.12f, 0.05f));
+        addBox(glm::vec3(-0.30f, 0.12f,  0.13f), glm::vec3(0.05f, 0.12f, 0.05f));
+        addBox(glm::vec3(-0.30f, 0.12f, -0.13f), glm::vec3(0.05f, 0.12f, 0.05f));
+
+        glGenVertexArrays(1, &app.cow.vao);
+        glGenBuffers(1, &app.cow.vbo);
+        glGenBuffers(1, &app.cow.ebo);
+        glBindVertexArray(app.cow.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, app.cow.vbo);
+        glBufferData(GL_ARRAY_BUFFER, cv.size()*sizeof(PV), cv.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app.cow.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, ci.size()*sizeof(unsigned int), ci.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,p));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(PV),(void*)offsetof(PV,n));
+        glDisableVertexAttribArray(2);
+        glVertexAttrib3f(2, 1.0f, 1.0f, 1.0f);
+        glBindVertexArray(0);
+        app.cow.indexCount = (GLsizei)ci.size();
     }
 
     // ══════════════════════════════════════
@@ -3263,6 +3470,7 @@ int main() {
     if (app.fence.vao) { glDeleteBuffers(1,&app.fence.vbo); glDeleteBuffers(1,&app.fence.ebo); glDeleteVertexArrays(1,&app.fence.vao); }
     if (app.car.vao) { glDeleteBuffers(1,&app.car.vbo); glDeleteBuffers(1,&app.car.ebo); glDeleteVertexArrays(1,&app.car.vao); }
     if (app.pole.vao) { glDeleteBuffers(1,&app.pole.vbo); glDeleteBuffers(1,&app.pole.ebo); glDeleteVertexArrays(1,&app.pole.vao); }
+    if (app.cow.vao) { glDeleteBuffers(1,&app.cow.vbo); glDeleteBuffers(1,&app.cow.ebo); glDeleteVertexArrays(1,&app.cow.vao); }
     glDeleteProgram(app.particleProgram);
     glDeleteProgram(app.skyProgram);
     glDeleteProgram(app.rainProgram);
