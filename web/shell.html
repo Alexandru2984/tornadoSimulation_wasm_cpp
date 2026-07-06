@@ -242,6 +242,7 @@
         <button class="ctrl-btn" id="btn-mute">🔊 Sunet (M)</button>
         <button class="ctrl-btn" id="btn-quality">⚙ Calitate: Ridicat</button>
         <button class="ctrl-btn" id="btn-restart">↺ Restart (R)</button>
+        <button class="ctrl-btn" id="btn-timeattack">⏱ Time Attack</button>
         <button class="ctrl-btn" id="btn-scores">🏆 Scoruri</button>
     </div>
 
@@ -536,6 +537,14 @@
                 Module._restart_game();
                 // If game was paused, unpause so it resumes
                 if (paused) document.getElementById('btn-pause').click();
+            }
+        });
+
+        document.getElementById('btn-timeattack').addEventListener('click', function() {
+            if (Module._start_time_attack) {
+                Module._start_time_attack();
+                if (paused) document.getElementById('btn-pause').click();
+                document.getElementById('controls').classList.remove('show');
             }
         });
 

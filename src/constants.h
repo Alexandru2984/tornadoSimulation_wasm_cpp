@@ -79,6 +79,9 @@ static const int   WAVE_BASE_TARGET      = 5;       // wave 1 target = 5 destroy
 // Game over: tornado stuck at minimum size for this long = defeat
 static const float GAMEOVER_FADE_TIME    = 12.0f;
 
+// Time Attack mode
+static const float TIME_ATTACK_SECONDS   = 180.0f; // 3 minutes
+
 // Power-ups
 static const int   MAX_POWERUPS          = 3;       // max on map
 static const float POWERUP_SPAWN_INTERVAL = 8.0f;   // seconds between spawn tries

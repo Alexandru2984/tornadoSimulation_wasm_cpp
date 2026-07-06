@@ -266,6 +266,8 @@ struct AppState {
     float victoryTimer = 0.0f;   // also reused as the game-over screen timer
     float minScaleTimer = 0.0f;  // time spent at minimum tornado size
     bool endlessMode = false;    // keep spawning waves after wave 10
+    bool timeAttack = false;     // score-chase mode with a countdown
+    float timeAttackRemaining = 0.0f;
 
     // Power-ups
     std::vector<PowerUp> powerUps;
@@ -404,7 +406,14 @@ extern "C" {
         app.comboMultiplier = 1.0f;
         app.tornadoTrail.clear();
         app.trailSampleTimer = 0.0f;
+        app.timeAttack = false;
+        app.timeAttackRemaining = 0.0f;
         g_paused = false;
+    }
+    EMSCRIPTEN_KEEPALIVE void start_time_attack() {
+        restart_game();
+        app.timeAttack = true;
+        app.timeAttackRemaining = TIME_ATTACK_SECONDS;
     }
     EMSCRIPTEN_KEEPALIVE int get_score_points() {
         return app.score.scorePoints;
@@ -906,7 +915,8 @@ static void main_loop() {
     }
 
     // ── Game over: tornado starved at minimum size for too long ──
-    if (s.gamePhase == GamePhase::PLAYING) {
+    // (disabled in Time Attack — there the only end condition is the clock)
+    if (s.gamePhase == GamePhase::PLAYING && !s.timeAttack) {
         if (s.tornadoScale <= TORNADO_MIN_SCALE + 0.001f && !hasShield)
             s.minScaleTimer += dt;
         else
@@ -915,6 +925,20 @@ static void main_loop() {
             s.gamePhase = GamePhase::GAME_OVER;
             s.victoryTimer = 0.0f;
             playGameOverSound();
+            saveScore(s.score.scorePoints, s.wave.number);
+        }
+    }
+
+    // ── Time Attack: countdown + EF ramp ──
+    if (s.timeAttack && s.gamePhase == GamePhase::PLAYING) {
+        s.timeAttackRemaining -= dt;
+        float elapsed = TIME_ATTACK_SECONDS - s.timeAttackRemaining;
+        s.wave.efScale = std::clamp((int)(elapsed / 30.0f), 0, 5);
+        if (s.timeAttackRemaining <= 0.0f) {
+            s.timeAttackRemaining = 0.0f;
+            s.gamePhase = GamePhase::VICTORY;   // reuse the summary screen
+            s.victoryTimer = 0.0f;
+            playVictorySound();
             saveScore(s.score.scorePoints, s.wave.number);
         }
     }
@@ -1146,8 +1170,8 @@ static void main_loop() {
         s.score.scorePoints += (int)(newPoints * s.comboMultiplier);
     }
 
-    // Wave completion check
-    if (s.gamePhase == GamePhase::PLAYING &&
+    // Wave completion check (Time Attack ignores waves entirely)
+    if (s.gamePhase == GamePhase::PLAYING && !s.timeAttack &&
         s.wave.destroyed >= s.wave.target) {
         if (s.wave.number >= TOTAL_WAVES && !s.endlessMode) {
             s.gamePhase = GamePhase::VICTORY;
@@ -1805,26 +1829,43 @@ static void main_loop() {
                        glm::vec3(1.0f, 0.4f, 0.1f) * comboPulse);
         }
 
-        // ── Top-right: wave info ──
-        if (s.endlessMode)
-            snprintf(buf, sizeof(buf), "VAL %d  EF%d  INFINIT",
-                     s.wave.number, s.wave.efScale);
-        else
-            snprintf(buf, sizeof(buf), "VAL %d/%d  EF%d",
-                     s.wave.number, TOTAL_WAVES, s.wave.efScale);
-        renderLine(buf, 0.52f, 0.92f, cw, ch, glm::vec3(0.5f, 0.9f, 1.0f));
+        // ── Top-right: wave info / Time Attack clock ──
+        if (s.timeAttack) {
+            int secs = (int)ceilf(s.timeAttackRemaining);
+            snprintf(buf, sizeof(buf), "TIMP %d:%02d  EF%d", secs / 60, secs % 60, s.wave.efScale);
+            // Red pulse in the final 10 seconds
+            glm::vec3 clockCol = (secs <= 10)
+                ? glm::vec3(1.0f, 0.3f, 0.2f) * (0.6f + 0.4f * sinf(t * 8.0f))
+                : glm::vec3(0.5f, 0.9f, 1.0f);
+            renderLine(buf, 0.52f, 0.92f, cw, ch, clockCol);
 
-        // Wave progress bar
-        float progress = (s.wave.target > 0) ?
-            (float)s.wave.destroyed / (float)s.wave.target : 0.0f;
-        progress = glm::clamp(progress, 0.0f, 1.0f);
-        float barX0 = 0.52f, barX1 = 0.96f, barY = 0.88f, barH = 0.02f;
-        renderQuad(barX0, barY, barX1, barY + barH, glm::vec3(0.2f, 0.2f, 0.2f));
-        renderQuad(barX0, barY, barX0 + (barX1 - barX0) * progress, barY + barH,
-                   glm::vec3(0.3f, 0.8f, 1.0f));
+            // Time bar
+            float frac = glm::clamp(s.timeAttackRemaining / TIME_ATTACK_SECONDS, 0.0f, 1.0f);
+            float barX0 = 0.52f, barX1 = 0.96f, barY = 0.88f, barH = 0.02f;
+            renderQuad(barX0, barY, barX1, barY + barH, glm::vec3(0.2f, 0.2f, 0.2f));
+            renderQuad(barX0, barY, barX0 + (barX1 - barX0) * frac, barY + barH,
+                       glm::vec3(1.0f, 0.7f, 0.2f));
+        } else {
+            if (s.endlessMode)
+                snprintf(buf, sizeof(buf), "VAL %d  EF%d  INFINIT",
+                         s.wave.number, s.wave.efScale);
+            else
+                snprintf(buf, sizeof(buf), "VAL %d/%d  EF%d",
+                         s.wave.number, TOTAL_WAVES, s.wave.efScale);
+            renderLine(buf, 0.52f, 0.92f, cw, ch, glm::vec3(0.5f, 0.9f, 1.0f));
 
-        snprintf(buf, sizeof(buf), "%d/%d", s.wave.destroyed, s.wave.target);
-        renderLine(buf, 0.52f, 0.83f, scw * 0.8f, sch * 0.8f, glm::vec3(0.7f, 0.7f, 0.7f));
+            // Wave progress bar
+            float progress = (s.wave.target > 0) ?
+                (float)s.wave.destroyed / (float)s.wave.target : 0.0f;
+            progress = glm::clamp(progress, 0.0f, 1.0f);
+            float barX0 = 0.52f, barX1 = 0.96f, barY = 0.88f, barH = 0.02f;
+            renderQuad(barX0, barY, barX1, barY + barH, glm::vec3(0.2f, 0.2f, 0.2f));
+            renderQuad(barX0, barY, barX0 + (barX1 - barX0) * progress, barY + barH,
+                       glm::vec3(0.3f, 0.8f, 1.0f));
+
+            snprintf(buf, sizeof(buf), "%d/%d", s.wave.destroyed, s.wave.target);
+            renderLine(buf, 0.52f, 0.83f, scw * 0.8f, sch * 0.8f, glm::vec3(0.7f, 0.7f, 0.7f));
+        }
 
         // ── Active power-ups (left side, below score) ──
         float puY = 0.63f;
@@ -2001,26 +2042,36 @@ static void main_loop() {
                 alpha = (WAVE_ANNOUNCE_TIME - s.wave.announceTimer) * 2.0f;
 
             float bigCW = 0.05f, bigCH = 0.1f;
-            snprintf(buf, sizeof(buf), "VALUL %d", s.wave.number);
+            if (s.timeAttack)
+                snprintf(buf, sizeof(buf), "TIME ATTACK");
+            else
+                snprintf(buf, sizeof(buf), "VALUL %d", s.wave.number);
             float textW = (float)strlen(buf) * bigCW;
             renderLine(buf, -textW * 0.5f, 0.1f, bigCW, bigCH,
                        glm::vec3(0.5f, 0.9f, 1.0f) * alpha);
 
-            // EF scale label
-            static const glm::vec3 EF_COLORS[6] = {
-                {0.5f,0.9f,0.5f}, {0.8f,0.9f,0.3f}, {1.0f,0.8f,0.2f},
-                {1.0f,0.55f,0.1f}, {1.0f,0.25f,0.05f}, {1.0f,0.1f,0.1f}
-            };
-            snprintf(buf, sizeof(buf), "TORNADA EF%d", s.wave.efScale);
-            float efW = (float)strlen(buf) * 0.032f;
-            renderLine(buf, -efW * 0.5f, 0.03f, 0.032f, 0.064f,
-                       EF_COLORS[std::clamp(s.wave.efScale, 0, 5)] * alpha);
-
             float smCW = 0.025f, smCH = 0.05f;
-            snprintf(buf, sizeof(buf), "DISTRUGE %d OBIECTE", s.wave.target);
-            float stW = (float)strlen(buf) * smCW;
-            renderLine(buf, -stW * 0.5f, -0.05f, smCW, smCH,
-                       glm::vec3(0.8f, 0.8f, 0.8f) * alpha);
+            if (s.timeAttack) {
+                const char* sub = "3 MINUTE - SCOR MAXIM";
+                float stW = (float)strlen(sub) * smCW;
+                renderLine(sub, -stW * 0.5f, -0.02f, smCW, smCH,
+                           glm::vec3(1.0f, 0.7f, 0.3f) * alpha);
+            } else {
+                // EF scale label
+                static const glm::vec3 EF_COLORS[6] = {
+                    {0.5f,0.9f,0.5f}, {0.8f,0.9f,0.3f}, {1.0f,0.8f,0.2f},
+                    {1.0f,0.55f,0.1f}, {1.0f,0.25f,0.05f}, {1.0f,0.1f,0.1f}
+                };
+                snprintf(buf, sizeof(buf), "TORNADA EF%d", s.wave.efScale);
+                float efW = (float)strlen(buf) * 0.032f;
+                renderLine(buf, -efW * 0.5f, 0.03f, 0.032f, 0.064f,
+                           EF_COLORS[std::clamp(s.wave.efScale, 0, 5)] * alpha);
+
+                snprintf(buf, sizeof(buf), "DISTRUGE %d OBIECTE", s.wave.target);
+                float stW = (float)strlen(buf) * smCW;
+                renderLine(buf, -stW * 0.5f, -0.05f, smCW, smCH,
+                           glm::vec3(0.8f, 0.8f, 0.8f) * alpha);
+            }
         }
 
         // ── Victory screen ──
@@ -2032,14 +2083,17 @@ static void main_loop() {
                        glm::vec3(0.02f, 0.02f, 0.05f), 0.85f);
 
             float bigCW = 0.06f, bigCH = 0.12f;
-            const char* victoryText = "VICTORIE";
+            const char* victoryText = s.timeAttack ? "TIMP EXPIRAT" : "VICTORIE";
             float vw = (float)strlen(victoryText) * bigCW;
             float pulse = 0.7f + 0.3f * sinf(t * 3.0f);
             renderLine(victoryText, -vw * 0.5f, 0.25f, bigCW, bigCH,
                        glm::vec3(1.0f, 0.85f, 0.0f) * pulse);
 
             float smCW = 0.02f, smCH = 0.04f;
-            snprintf(buf, sizeof(buf), "TOATE CELE %d VALURI COMPLETE", TOTAL_WAVES);
+            if (s.timeAttack)
+                snprintf(buf, sizeof(buf), "TIME ATTACK - 3 MINUTE");
+            else
+                snprintf(buf, sizeof(buf), "TOATE CELE %d VALURI COMPLETE", TOTAL_WAVES);
             float bw2 = (float)strlen(buf) * smCW;
             renderLine(buf, -bw2 * 0.5f, 0.17f, smCW, smCH,
                        glm::vec3(0.7f, 0.9f, 1.0f));
@@ -2075,10 +2129,12 @@ static void main_loop() {
                 float rw = (float)strlen(restart) * smCW;
                 renderLine(restart, -rw * 0.5f, -0.30f, smCW, smCH,
                            glm::vec3(0.6f, 0.8f, 0.6f) * blink);
-                const char* endless = "APASA E PENTRU MOD INFINIT";
-                float ew = (float)strlen(endless) * smCW * 0.85f;
-                renderLine(endless, -ew * 0.5f, -0.38f, smCW * 0.85f, smCH * 0.85f,
-                           glm::vec3(0.9f, 0.6f, 1.0f) * blink);
+                if (!s.timeAttack) {
+                    const char* endless = "APASA E PENTRU MOD INFINIT";
+                    float ew = (float)strlen(endless) * smCW * 0.85f;
+                    renderLine(endless, -ew * 0.5f, -0.38f, smCW * 0.85f, smCH * 0.85f,
+                               glm::vec3(0.9f, 0.6f, 1.0f) * blink);
+                }
             }
         }
 
@@ -2161,8 +2217,8 @@ static void main_loop() {
         glEnable(GL_DEPTH_TEST);
     }
 
-    // ── Endless mode on E key (during victory) ──
-    if (s.gamePhase == GamePhase::VICTORY &&
+    // ── Endless mode on E key (during a normal victory, not Time Attack) ──
+    if (s.gamePhase == GamePhase::VICTORY && !s.timeAttack &&
         glfwGetKey(s.window, GLFW_KEY_E) == GLFW_PRESS) {
         s.endlessMode = true;
         s.wave.number++;
@@ -2188,6 +2244,8 @@ static void main_loop() {
             s.victoryTimer = 0.0f;
             s.minScaleTimer = 0.0f;
             s.endlessMode = false;
+            s.timeAttack = false;
+            s.timeAttackRemaining = 0.0f;
             s.activePowerUps.clear();
             s.powerUps.clear();
             s.powerUpSpawnTimer = 5.0f;

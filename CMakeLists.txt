@@ -61,7 +61,7 @@ if(USING_EMSCRIPTEN)
         "SHELL:-s MAX_WEBGL_VERSION=2"
         "SHELL:-s ENVIRONMENT=web"
         "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/shaders@shaders"
-        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_touch_set_move','_touch_set_look','_touch_set_cursor','_set_quality','_toggle_sound','_set_paused','_restart_game','_get_score_points','_get_game_phase']"
+        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_touch_set_move','_touch_set_look','_touch_set_cursor','_set_quality','_toggle_sound','_set_paused','_restart_game','_get_score_points','_get_game_phase','_start_time_attack']"
         "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
     )
 
