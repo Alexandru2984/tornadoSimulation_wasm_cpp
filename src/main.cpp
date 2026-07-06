@@ -146,11 +146,12 @@ struct ScorePopup {
     float maxLife;
 };
 
-// Cow that wanders around and flees from the tornado
+// Animal that wanders around and flees from the tornado (cow or sheep)
 struct ChunkAnimal {
     glm::vec3 pos;
     int chunkX = 0, chunkZ = 0;
     int genIdx = 0;
+    int species = 0;           // 0=cow, 1=sheep
     float health = 1.0f;
     bool destroyed = false;
     float yaw = 0.0f;          // facing direction
@@ -759,16 +760,18 @@ static void generateChunk(int cx, int cz) {
         }
         app.chunkProps.push_back(p);
     }
-    // Animals (cows)
+    // Animals (cows + sheep)
     for (int i = 0; i < ANIMALS_PER_CHUNK; ++i) {
         float px = ox + r01(cRng) * CHUNK_SIZE;
         float pz = oz + r01(cRng) * CHUNK_SIZE;
         float py = getTerrainHeight(px, pz);
+        float speciesRoll = r01(cRng); // draw before the water check so it stays deterministic
         if (py < WATER_LEVEL + 0.15f) continue;
         ChunkAnimal a;
         a.pos = glm::vec3(px, py, pz);
         a.chunkX = cx; a.chunkZ = cz;
         a.genIdx = i;
+        a.species = (speciesRoll < 0.5f) ? 0 : 1; // roughly half cows, half sheep
         a.yaw = r01(cRng) * 6.28f;
         a.wanderDir = glm::vec2(cosf(a.yaw), sinf(a.yaw));
         a.wanderTimer = 1.0f + r01(cRng) * 3.0f;
@@ -1188,13 +1191,15 @@ static void main_loop() {
         glm::vec2 toTor(s.tornadoPos.x - an.pos.x, s.tornadoPos.y - an.pos.z);
         float torDist = glm::length(toTor);
 
+        // Sheep are smaller, twitchier and flee a bit faster than cows
+        float skittish = (an.species == 1) ? 1.25f : 1.0f;
         glm::vec2 moveDir;
         float moveSpeed;
-        float panicR = ANIMAL_FLEE_RADIUS * s.tornadoScale;
+        float panicR = ANIMAL_FLEE_RADIUS * s.tornadoScale * (an.species == 1 ? 1.2f : 1.0f);
         if (torDist < panicR && torDist > 0.01f) {
             moveDir = -toTor / torDist;                // run away from the tornado
             float panic = 1.0f - torDist / panicR;     // faster when it is closer
-            moveSpeed = ANIMAL_FLEE_SPEED * (0.6f + 0.8f * panic);
+            moveSpeed = ANIMAL_FLEE_SPEED * skittish * (0.6f + 0.8f * panic);
         } else {
             an.wanderTimer -= dt;
             if (an.wanderTimer <= 0.0f) {
@@ -1228,8 +1233,8 @@ static void main_loop() {
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
-                newPoints += 75.0f;
-                playMooSound();
+                newPoints += (an.species == 1) ? 50.0f : 75.0f;
+                if (an.species == 1) playBaaSound(); else playMooSound();
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.3f, TORNADO_MAX_SCALE);
             }
         }
@@ -1642,18 +1647,24 @@ static void main_loop() {
 
         for (const auto& an : s.animals) {
             if (an.destroyed) continue;
-            // Waddle bob while moving
+            // Waddle bob while moving (sheep bounce a touch quicker)
+            float bobSpeed = (an.species == 1) ? 11.0f : 9.0f;
             float bob = (an.speed > 0.1f)
-                ? fabsf(sinf(t * 9.0f + (float)an.genIdx * 2.1f)) * 0.05f : 0.0f;
+                ? fabsf(sinf(t * bobSpeed + (float)an.genIdx * 2.1f)) * 0.05f : 0.0f;
             glm::mat4 model = glm::translate(glm::mat4(1.0f),
                                   glm::vec3(an.pos.x, an.pos.y + bob, an.pos.z));
             model = glm::rotate(model, an.yaw, glm::vec3(0, 1, 0));
+            float sc = (an.species == 1) ? 0.6f : 1.0f;   // sheep are smaller
+            model = glm::scale(model, glm::vec3(sc));
             glm::mat3 nm = normalMat3(model);
             glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
             glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
-            // Alternate white and brown cows
-            glm::vec3 tint = (an.genIdx % 2 == 0)
-                ? glm::vec3(0.92f, 0.90f, 0.85f) : glm::vec3(0.55f, 0.38f, 0.25f);
+            glm::vec3 tint;
+            if (an.species == 1)
+                tint = glm::vec3(0.95f, 0.95f, 0.92f);    // fluffy white sheep
+            else
+                tint = (an.genIdx % 2 == 0)               // white / brown cows
+                    ? glm::vec3(0.92f, 0.90f, 0.85f) : glm::vec3(0.55f, 0.38f, 0.25f);
             glUniform3fv(mu.tint, 1, glm::value_ptr(tint));
             glBindVertexArray(s.cow.vao);
             glDrawElements(GL_TRIANGLES, s.cow.indexCount, GL_UNSIGNED_INT, nullptr);

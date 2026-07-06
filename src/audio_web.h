@@ -195,6 +195,23 @@ EM_JS(int, js_getHighScore, (), {
     } catch(e) { return 0; }
 });
 
+EM_JS(void, js_playBaaSound, (), {
+    var a = window._tornadoAudio; if (!a) return;
+    var ctx = a.ctx;
+    var osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(340, ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(300, ctx.currentTime + 0.1);
+    osc.frequency.linearRampToValueAtTime(360, ctx.currentTime + 0.25);
+    var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 900;
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, ctx.currentTime);
+    g.gain.linearRampToValueAtTime(0.16, ctx.currentTime + 0.04);
+    g.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3);
+    osc.connect(lp); lp.connect(g); g.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.3);
+});
+
 // Haptic feedback — a no-op on devices without a vibration motor
 EM_JS(void, js_vibrate, (int ms), {
     if (navigator.vibrate) { try { navigator.vibrate(ms); } catch(e) {} }
@@ -252,6 +269,11 @@ static void playGameOverSound() {
 static void playMooSound() {
 #ifdef PLATFORM_EMSCRIPTEN
     if (!g_soundMuted) js_playMooSound();
+#endif
+}
+static void playBaaSound() {
+#ifdef PLATFORM_EMSCRIPTEN
+    if (!g_soundMuted) js_playBaaSound();
 #endif
 }
 static void saveScore(int score, int wave) {
