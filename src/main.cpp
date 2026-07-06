@@ -30,10 +30,6 @@
 #include <algorithm>
 #include <deque>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 // For getcwd fallback paths (works on both POSIX & Emscripten)
 #ifdef _WIN32
   #include <direct.h>
@@ -44,98 +40,10 @@
   #define GET_CWD getcwd
 #endif
 
-// ── Constants ────────────────────────────────────────────────────────
-static const int   MAX_PARTICLES   = 2200;
-static const int   INNER_PARTICLES = 1400;
-
-// Tornado mesh
-static const int   TORNADO_SEGMENTS = 64;
-static const int   TORNADO_RINGS    = 40;
-static const float TORNADO_HEIGHT   = 6.0f;
-static const float TORNADO_BASE_R   = 1.5f;
-
-// Vortex physics
-static const float VORTEX_INNER    = 4.0f;
-static const float VORTEX_OUTER    = 2.0f;
-static const float UPLIFT_INNER    = 2.5f;
-static const float UPLIFT_OUTER    = 1.0f;
-static const float PULL_INNER      = 1.5f;
-static const float PULL_OUTER      = 0.5f;
-static const float VEL_DAMPING     = 2.0f;
-
-// Destruction
-static const int   MAX_DEBRIS          = 500;
-static const float DESTRUCTION_RADIUS  = 3.5f;
-static const float DAMAGE_RATE         = 2.0f;
-static const int   DEBRIS_PER_HOUSE    = 40;
-static const int   DEBRIS_PER_TREE     = 15;
-static const float DEBRIS_LIFETIME     = 5.0f;
-
-// Tornado growth
-static const float TORNADO_GROWTH_PER_OBJ = 0.04f; // scale bump per destroyed object
-static const float TORNADO_MAX_SCALE      = 3.0f;
-
-// EF-scale destruction radius multipliers (index = EF0..EF5)
-static const float EF_RADIUS_MULT[6] = {0.75f, 0.85f, 1.0f, 1.15f, 1.3f, 1.5f};
-
-// Weather
-static const int   MAX_RAIN            = 4000;
-static const float RAIN_AREA           = 30.0f;
-static const float RAIN_HEIGHT         = 15.0f;
-static const float RAIN_SPEED          = 8.0f;
-static const float LIGHTNING_MIN_INTERVAL = 2.0f;
-static const float LIGHTNING_MAX_INTERVAL = 7.0f;
-static const float LIGHTNING_DECAY       = 8.0f;
-
-// World chunks (procedural infinite world)
-static const float CHUNK_SIZE            = 20.0f;
-static const int   CHUNK_RADIUS          = 3;      // chunks around player
-static const int   HOUSES_PER_CHUNK      = 3;
-static const int   TREES_PER_CHUNK       = 5;
-static const int   FENCES_PER_CHUNK      = 4;
-static const int   CARS_PER_CHUNK        = 1;
-static const int   POLES_PER_CHUNK       = 2;
-static const int   ANIMALS_PER_CHUNK     = 2;
-static const int   MAX_SCORCH_MARKS      = 200;
-
-// Animals (cows that flee from the tornado)
-static const float ANIMAL_FLEE_RADIUS    = 12.0f;  // start running at this distance
-static const float ANIMAL_FLEE_SPEED     = 3.2f;
-static const float ANIMAL_WANDER_SPEED   = 0.7f;
-
-// Tornado decay (shrinks when idle)
-static const float TORNADO_DECAY_RATE    = 0.03f;  // per second
-static const float TORNADO_MIN_SCALE     = 0.4f;   // smallest possible
-static const float TORNADO_DECAY_GRACE   = 2.0f;   // seconds after last destroy before decay starts
-
-// Wave system
-static const int   TOTAL_WAVES           = 10;
-static const float WAVE_ANNOUNCE_TIME    = 3.0f;    // seconds to show "WAVE X"
-static const int   WAVE_BASE_TARGET      = 5;       // wave 1 target = 5 destroys
-
-// Game over: tornado stuck at minimum size for this long = defeat
-static const float GAMEOVER_FADE_TIME    = 12.0f;
-
-// Power-ups
-static const int   MAX_POWERUPS          = 3;       // max on map
-static const float POWERUP_SPAWN_INTERVAL = 8.0f;   // seconds between spawn tries
-static const float POWERUP_COLLECT_RADIUS = 2.5f;
-static const float POWERUP_DURATION       = 6.0f;   // seconds (for timed effects)
-static const float POWERUP_BOB_SPEED      = 3.0f;
-static const float POWERUP_BOB_HEIGHT     = 0.3f;
-
-// Minimap
-static const float MINIMAP_RADIUS        = 60.0f;   // world-space range
-static const float MINIMAP_NDC_SIZE      = 0.22f;   // screen fraction
-
-// Terrain heightmap
-static const int   TERRAIN_GRID          = 160;      // cells per axis
-static const float TERRAIN_EXTENT        = 200.0f;   // half-size in world units
-static const float TERRAIN_RECENTER_DIST = 60.0f;    // rebuild grid when camera strays this far
-static const float WATER_LEVEL           = 0.3f;     // Y where water surface sits
-
-// Day/night cycle
-static const float DAY_CYCLE_SPEED       = 0.015f;   // full cycle ~67 seconds
+#include "constants.h"
+#include "terrain_noise.h"
+#include "audio_web.h"
+#include "font5x7.h"
 
 // Uniform location caches
 struct MainUniforms {
@@ -442,7 +350,6 @@ static bool  g_touchLookActive = false;
 
 // Runtime-adjustable state (can be set from JS)
 static int   g_activeParticles = MAX_PARTICLES;  // quality preset control
-static bool  g_soundMuted      = false;
 static bool  g_paused          = false;
 
 #ifdef PLATFORM_EMSCRIPTEN
@@ -638,56 +545,6 @@ static void spawnDebris(const glm::vec3& pos, int count) {
         d.colorType = (int)(rnd01(rng) * 3.0f) % 3;
         app.debrisPieces.push_back(d);
     }
-}
-
-// ── Procedural terrain noise ─────────────────────────────────────────
-static float hashNoise(int ix, int iz) {
-    // Use uint32_t for all arithmetic — signed overflow is undefined behaviour.
-    uint32_t n = (uint32_t)ix * 374761393u + (uint32_t)iz * 668265263u;
-    n = (n << 13) ^ n;
-    return 1.0f - (float)((n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu) / 1073741824.0f;
-}
-
-static float smoothNoise(float x, float z) {
-    int ix = (int)floorf(x);
-    int iz = (int)floorf(z);
-    float fx = x - ix;
-    float fz = z - iz;
-    // Smoothstep
-    fx = fx * fx * (3.0f - 2.0f * fx);
-    fz = fz * fz * (3.0f - 2.0f * fz);
-    float a = hashNoise(ix, iz);
-    float b = hashNoise(ix + 1, iz);
-    float c = hashNoise(ix, iz + 1);
-    float d = hashNoise(ix + 1, iz + 1);
-    return a + fx * (b - a) + fz * (c - a) + fx * fz * (a - b - c + d);
-}
-
-static float fbmNoise(float x, float z, int octaves, float persistence = 0.5f) {
-    float total = 0.0f, amplitude = 1.0f, frequency = 1.0f, maxVal = 0.0f;
-    for (int i = 0; i < octaves; ++i) {
-        total += smoothNoise(x * frequency, z * frequency) * amplitude;
-        maxVal += amplitude;
-        amplitude *= persistence;
-        frequency *= 2.0f;
-    }
-    return total / maxVal;
-}
-
-// Get terrain height at any world position
-static float getTerrainHeight(float x, float z) {
-    // Large-scale hills/mountains
-    float h = fbmNoise(x * 0.012f, z * 0.012f, 5, 0.55f) * 6.0f;
-    // Medium ridges
-    h += fbmNoise(x * 0.035f + 50.0f, z * 0.035f + 50.0f, 3, 0.5f) * 1.5f;
-    // Flatten near origin so player starts on flat ground
-    float dist = sqrtf(x * x + z * z);
-    float flatFactor = glm::smoothstep(8.0f, 50.0f, dist);
-    h *= flatFactor;
-    // Raise the flattened start plateau above the water level so the
-    // spawn area is dry land and destructible objects spawn nearby
-    h += (1.0f - flatFactor) * 1.2f;
-    return h;
 }
 
 // Shared vertex layout for terrain-style meshes
@@ -940,251 +797,7 @@ static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
     g_mouseY = -((ypos / (double)h) * 2.0 - 1.0);
 }
 
-// ── Sound effects (Web Audio API via Emscripten) ─────────────────────
-#ifdef PLATFORM_EMSCRIPTEN
 
-EM_JS(void, js_initSound, (), {
-    if (window._tornadoAudio) return;
-    var ctx = new (window.AudioContext || window.webkitAudioContext)();
-    window._tornadoAudio = {ctx: ctx, windGain: null};
-    var bufSize = ctx.sampleRate * 2;
-    var buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
-    var d = buf.getChannelData(0);
-    for (var i = 0; i < bufSize; i++) d[i] = Math.random() * 2 - 1;
-    var src = ctx.createBufferSource();
-    src.buffer = buf; src.loop = true;
-    var bp = ctx.createBiquadFilter();
-    bp.type = "bandpass"; bp.frequency.value = 300; bp.Q.value = 0.5;
-    var gain = ctx.createGain(); gain.gain.value = 0.15;
-    src.connect(bp); bp.connect(gain); gain.connect(ctx.destination);
-    src.start();
-    window._tornadoAudio.windGain = gain;
-    window._tornadoAudio.windFilter = bp;
-
-    // Low storm drone: two detuned oscillators with a slow swell (LFO)
-    var d1 = ctx.createOscillator(); d1.type = "sawtooth"; d1.frequency.value = 55;
-    var d2 = ctx.createOscillator(); d2.type = "sawtooth"; d2.frequency.value = 55.7;
-    var dlp = ctx.createBiquadFilter(); dlp.type = "lowpass"; dlp.frequency.value = 120;
-    var dg = ctx.createGain(); dg.gain.value = 0.045;
-    var lfo = ctx.createOscillator(); lfo.type = "sine"; lfo.frequency.value = 0.08;
-    var lfoG = ctx.createGain(); lfoG.gain.value = 0.02;
-    lfo.connect(lfoG); lfoG.connect(dg.gain);
-    d1.connect(dlp); d2.connect(dlp); dlp.connect(dg); dg.connect(ctx.destination);
-    d1.start(); d2.start(); lfo.start();
-    window._tornadoAudio.musicGain = dg;
-});
-
-EM_JS(void, js_playDestroySound, (), {
-    var a = window._tornadoAudio; if (!a) return;
-    var ctx = a.ctx;
-    var len = (ctx.sampleRate * 0.3)|0;
-    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
-    var d = buf.getChannelData(0);
-    for (var i = 0; i < len; i++) {
-        var env = 1.0 - i / len;
-        d[i] = (Math.random() * 2 - 1) * env * env;
-    }
-    var src = ctx.createBufferSource(); src.buffer = buf;
-    var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 400;
-    var g = ctx.createGain(); g.gain.value = 0.35;
-    src.connect(lp); lp.connect(g); g.connect(ctx.destination);
-    src.start();
-});
-
-EM_JS(void, js_playPowerUpSound, (), {
-    var a = window._tornadoAudio; if (!a) return;
-    var ctx = a.ctx;
-    var osc = ctx.createOscillator();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(400, ctx.currentTime);
-    osc.frequency.linearRampToValueAtTime(900, ctx.currentTime + 0.15);
-    var g = ctx.createGain();
-    g.gain.setValueAtTime(0.25, ctx.currentTime);
-    g.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.2);
-    osc.connect(g); g.connect(ctx.destination);
-    osc.start(); osc.stop(ctx.currentTime + 0.2);
-});
-
-EM_JS(void, js_playWaveSound, (), {
-    var a = window._tornadoAudio; if (!a) return;
-    var ctx = a.ctx;
-    var freqs = [330, 440, 550];
-    for (var i = 0; i < 3; i++) {
-        var osc = ctx.createOscillator();
-        osc.type = "square";
-        osc.frequency.value = freqs[i];
-        var g = ctx.createGain();
-        g.gain.setValueAtTime(0, ctx.currentTime + i*0.12);
-        g.gain.linearRampToValueAtTime(0.15, ctx.currentTime + i*0.12 + 0.03);
-        g.gain.linearRampToValueAtTime(0, ctx.currentTime + i*0.12 + 0.3);
-        osc.connect(g); g.connect(ctx.destination);
-        osc.start(ctx.currentTime + i*0.12);
-        osc.stop(ctx.currentTime + i*0.12 + 0.3);
-    }
-});
-
-EM_JS(void, js_playThunderSound, (), {
-    var a = window._tornadoAudio; if (!a) return;
-    var ctx = a.ctx;
-    var len = (ctx.sampleRate * 1.5)|0;
-    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
-    var d = buf.getChannelData(0);
-    for (var i = 0; i < len; i++) {
-        var env = Math.exp(-3.0 * i / len);
-        d[i] = (Math.random() * 2 - 1) * env;
-    }
-    var src = ctx.createBufferSource(); src.buffer = buf;
-    var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 200;
-    var g = ctx.createGain(); g.gain.value = 0.4;
-    src.connect(lp); lp.connect(g); g.connect(ctx.destination);
-    src.start();
-});
-
-EM_JS(void, js_updateWindVolume, (float scale), {
-    var a = window._tornadoAudio; if (!a || !a.windGain) return;
-    a.windGain.gain.value = 0.1 + scale * 0.12;
-    a.windFilter.frequency.value = 200 + scale * 150;
-});
-
-EM_JS(void, js_playVictorySound, (), {
-    var a = window._tornadoAudio; if (!a) return;
-    var ctx = a.ctx;
-    var notes = [523, 659, 784, 1047];
-    for (var i = 0; i < notes.length; i++) {
-        var osc = ctx.createOscillator();
-        osc.type = "sine"; osc.frequency.value = notes[i];
-        var g = ctx.createGain();
-        g.gain.setValueAtTime(0, ctx.currentTime + i*0.2);
-        g.gain.linearRampToValueAtTime(0.2, ctx.currentTime + i*0.2 + 0.05);
-        g.gain.linearRampToValueAtTime(0, ctx.currentTime + i*0.2 + 0.5);
-        osc.connect(g); g.connect(ctx.destination);
-        osc.start(ctx.currentTime + i*0.2);
-        osc.stop(ctx.currentTime + i*0.2 + 0.5);
-    }
-});
-
-EM_JS(void, js_playMooSound, (), {
-    var a = window._tornadoAudio; if (!a) return;
-    var ctx = a.ctx;
-    var osc = ctx.createOscillator();
-    osc.type = "sawtooth";
-    osc.frequency.setValueAtTime(180, ctx.currentTime);
-    osc.frequency.linearRampToValueAtTime(120, ctx.currentTime + 0.35);
-    var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 500;
-    var g = ctx.createGain();
-    g.gain.setValueAtTime(0.001, ctx.currentTime);
-    g.gain.linearRampToValueAtTime(0.22, ctx.currentTime + 0.06);
-    g.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.4);
-    osc.connect(lp); lp.connect(g); g.connect(ctx.destination);
-    osc.start(); osc.stop(ctx.currentTime + 0.4);
-});
-
-EM_JS(void, js_playGameOverSound, (), {
-    var a = window._tornadoAudio; if (!a) return;
-    var ctx = a.ctx;
-    var notes = [392, 330, 262, 196];
-    for (var i = 0; i < notes.length; i++) {
-        var osc = ctx.createOscillator();
-        osc.type = "sine"; osc.frequency.value = notes[i];
-        var g = ctx.createGain();
-        g.gain.setValueAtTime(0, ctx.currentTime + i*0.25);
-        g.gain.linearRampToValueAtTime(0.2, ctx.currentTime + i*0.25 + 0.05);
-        g.gain.linearRampToValueAtTime(0, ctx.currentTime + i*0.25 + 0.6);
-        osc.connect(g); g.connect(ctx.destination);
-        osc.start(ctx.currentTime + i*0.25);
-        osc.stop(ctx.currentTime + i*0.25 + 0.6);
-    }
-});
-
-EM_JS(void, js_saveScore, (int score, int wave), {
-    try {
-        var key = "tornado3d_scores";
-        var scores = JSON.parse(localStorage.getItem(key) || "[]");
-        scores.push({score: score, wave: wave, date: new Date().toLocaleDateString()});
-        scores.sort(function(a,b) { return b.score - a.score; });
-        if (scores.length > 10) scores = scores.slice(0, 10);
-        localStorage.setItem(key, JSON.stringify(scores));
-    } catch(e) {}
-    // Submit to the global leaderboard too (fire and forget)
-    try {
-        if (score > 0 && typeof fetch === "function") {
-            var name = (localStorage.getItem("tornado3d_name") || "ANONIM").slice(0, 16);
-            fetch("/api/scores", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({name: name, score: score, wave: wave})
-            }).catch(function(){});
-        }
-    } catch(e) {}
-});
-
-EM_JS(int, js_getHighScore, (), {
-    try {
-        var scores = JSON.parse(localStorage.getItem("tornado3d_scores") || "[]");
-        return scores.length > 0 ? scores[0].score : 0;
-    } catch(e) { return 0; }
-});
-
-#endif // PLATFORM_EMSCRIPTEN
-
-static void initSound() {
-#ifdef PLATFORM_EMSCRIPTEN
-    js_initSound();
-    app.soundInitialized = true;
-#endif
-}
-static void playDestroySound() {
-#ifdef PLATFORM_EMSCRIPTEN
-    if (!g_soundMuted) js_playDestroySound();
-#endif
-}
-static void playPowerUpSound() {
-#ifdef PLATFORM_EMSCRIPTEN
-    if (!g_soundMuted) js_playPowerUpSound();
-#endif
-}
-static void playWaveSound() {
-#ifdef PLATFORM_EMSCRIPTEN
-    if (!g_soundMuted) js_playWaveSound();
-#endif
-}
-static void playThunderSound() {
-#ifdef PLATFORM_EMSCRIPTEN
-    if (!g_soundMuted) js_playThunderSound();
-#endif
-}
-static void updateWindVolume(float tornadoScale) {
-#ifdef PLATFORM_EMSCRIPTEN
-    if (!g_soundMuted) js_updateWindVolume(tornadoScale);
-#endif
-}
-static void playVictorySound() {
-#ifdef PLATFORM_EMSCRIPTEN
-    if (!g_soundMuted) js_playVictorySound();
-#endif
-}
-static void playGameOverSound() {
-#ifdef PLATFORM_EMSCRIPTEN
-    if (!g_soundMuted) js_playGameOverSound();
-#endif
-}
-static void playMooSound() {
-#ifdef PLATFORM_EMSCRIPTEN
-    if (!g_soundMuted) js_playMooSound();
-#endif
-}
-static void saveScore(int score, int wave) {
-#ifdef PLATFORM_EMSCRIPTEN
-    js_saveScore(score, wave);
-#endif
-}
-static int getHighScore() {
-#ifdef PLATFORM_EMSCRIPTEN
-    return js_getHighScore();
-#else
-    return 0;
-#endif
-}
 
 // ═════════════════════════════════════════════════════════════════════
 // main_loop — called every frame by the browser (Emscripten) or by
@@ -1266,7 +879,7 @@ static void main_loop() {
     }
 
     // ── Initialize sound on first frame (needs user gesture context) ──
-    if (!s.soundInitialized) initSound();
+    if (!s.soundInitialized) { initSound(); s.soundInitialized = true; }
 
     // ── Wave system logic ──
     if (s.gamePhase == GamePhase::WAVE_ANNOUNCE) {
@@ -2836,83 +2449,7 @@ int main() {
 
         // Minimal bitmaps for digits 0-9, A-Z, a-z, and some punctuation
         // Each string is 7 rows of 5 bits
-        struct GlyphDef { int ch; const char* bits[7]; };
-        GlyphDef glyphs[] = {
-            {'0', {"01110","10001","10011","10101","11001","10001","01110"}},
-            {'1', {"00100","01100","00100","00100","00100","00100","01110"}},
-            {'2', {"01110","10001","00001","00110","01000","10000","11111"}},
-            {'3', {"01110","10001","00001","00110","00001","10001","01110"}},
-            {'4', {"00010","00110","01010","10010","11111","00010","00010"}},
-            {'5', {"11111","10000","11110","00001","00001","10001","01110"}},
-            {'6', {"01110","10000","11110","10001","10001","10001","01110"}},
-            {'7', {"11111","00001","00010","00100","01000","01000","01000"}},
-            {'8', {"01110","10001","10001","01110","10001","10001","01110"}},
-            {'9', {"01110","10001","10001","01111","00001","00001","01110"}},
-            {'A', {"01110","10001","10001","11111","10001","10001","10001"}},
-            {'B', {"11110","10001","10001","11110","10001","10001","11110"}},
-            {'C', {"01110","10001","10000","10000","10000","10001","01110"}},
-            {'D', {"11110","10001","10001","10001","10001","10001","11110"}},
-            {'E', {"11111","10000","10000","11110","10000","10000","11111"}},
-            {'F', {"11111","10000","10000","11110","10000","10000","10000"}},
-            {'G', {"01110","10001","10000","10111","10001","10001","01110"}},
-            {'H', {"10001","10001","10001","11111","10001","10001","10001"}},
-            {'I', {"01110","00100","00100","00100","00100","00100","01110"}},
-            {'K', {"10001","10010","10100","11000","10100","10010","10001"}},
-            {'L', {"10000","10000","10000","10000","10000","10000","11111"}},
-            {'M', {"10001","11011","10101","10101","10001","10001","10001"}},
-            {'N', {"10001","11001","10101","10011","10001","10001","10001"}},
-            {'O', {"01110","10001","10001","10001","10001","10001","01110"}},
-            {'P', {"11110","10001","10001","11110","10000","10000","10000"}},
-            {'R', {"11110","10001","10001","11110","10100","10010","10001"}},
-            {'S', {"01110","10001","10000","01110","00001","10001","01110"}},
-            {'T', {"11111","00100","00100","00100","00100","00100","00100"}},
-            {'U', {"10001","10001","10001","10001","10001","10001","01110"}},
-            {'V', {"10001","10001","10001","10001","01010","01010","00100"}},
-            {'W', {"10001","10001","10001","10101","10101","11011","10001"}},
-            {'X', {"10001","01010","00100","00100","00100","01010","10001"}},
-            {'Y', {"10001","01010","00100","00100","00100","00100","00100"}},
-            {'Z', {"11111","00001","00010","00100","01000","10000","11111"}},
-            {':', {"00000","00100","00100","00000","00100","00100","00000"}},
-            {'.', {"00000","00000","00000","00000","00000","01100","01100"}},
-            {'x', {"00000","00000","10001","01010","00100","01010","10001"}},
-            {' ', {"00000","00000","00000","00000","00000","00000","00000"}},
-            {'J', {"00111","00010","00010","00010","00010","10010","01100"}},
-            {'Q', {"01110","10001","10001","10001","10101","10010","01101"}},
-            {'/', {"00001","00001","00010","00100","01000","10000","10000"}},
-            {'-', {"00000","00000","00000","01110","00000","00000","00000"}},
-            {'!', {"00100","00100","00100","00100","00100","00000","00100"}},
-            {'%', {"11001","11010","00010","00100","01000","01011","10011"}},
-            {'+', {"00000","00100","00100","11111","00100","00100","00000"}},
-            {',', {"00000","00000","00000","00000","00110","00110","01000"}},
-            {'(', {"00010","00100","01000","01000","01000","00100","00010"}},
-            {')', {"01000","00100","00010","00010","00010","00100","01000"}},
-            {'a', {"00000","00000","01110","00001","01111","10001","01111"}},
-            {'b', {"10000","10000","11110","10001","10001","10001","11110"}},
-            {'c', {"00000","00000","01110","10000","10000","10001","01110"}},
-            {'d', {"00001","00001","01111","10001","10001","10001","01111"}},
-            {'e', {"00000","00000","01110","10001","11111","10000","01110"}},
-            {'f', {"00110","01001","01000","11100","01000","01000","01000"}},
-            {'g', {"00000","01111","10001","10001","01111","00001","01110"}},
-            {'h', {"10000","10000","11110","10001","10001","10001","10001"}},
-            {'i', {"00100","00000","01100","00100","00100","00100","01110"}},
-            {'j', {"00010","00000","00110","00010","00010","10010","01100"}},
-            {'k', {"10000","10000","10010","10100","11000","10100","10010"}},
-            {'l', {"01100","00100","00100","00100","00100","00100","01110"}},
-            {'m', {"00000","00000","11010","10101","10101","10101","10101"}},
-            {'n', {"00000","00000","11110","10001","10001","10001","10001"}},
-            {'o', {"00000","00000","01110","10001","10001","10001","01110"}},
-            {'p', {"00000","00000","11110","10001","11110","10000","10000"}},
-            {'q', {"00000","00000","01111","10001","01111","00001","00001"}},
-            {'r', {"00000","00000","10110","11001","10000","10000","10000"}},
-            {'s', {"00000","00000","01111","10000","01110","00001","11110"}},
-            {'t', {"01000","01000","11100","01000","01000","01001","00110"}},
-            {'u', {"00000","00000","10001","10001","10001","10011","01101"}},
-            {'v', {"00000","00000","10001","10001","10001","01010","00100"}},
-            {'w', {"00000","00000","10001","10101","10101","10101","01010"}},
-            {'y', {"00000","00000","10001","10001","01111","00001","01110"}},
-            {'z', {"00000","00000","11111","00010","00100","01000","11111"}},
-        };
-        for (auto& g : glyphs) {
+        for (auto& g : FONT_GLYPHS) {
             int idx = g.ch - 32;
             int col = idx % COLS, row = idx / COLS;
             for (int gy = 0; gy < GH; ++gy) {
