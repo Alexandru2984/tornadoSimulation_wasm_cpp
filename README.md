@@ -1,16 +1,18 @@
 # Tornado 3D — C++ / OpenGL / WebAssembly
 
-Interactive 3D tornado simulation with particles, houses, trees and glTF models.
+Interactive 3D tornado destruction game with an infinite procedural world.
 Runs natively on desktop (OpenGL 3.3) and in the browser (WebGL 2 via Emscripten/WASM).
 
 ## Features
 
-- Procedural tornado mesh with swirl animation
-- Particle system with inner dust and outer debris (2200 particles)
-- Scene with ground, houses, trees (procedurally generated) and glTF models
-- Directional lighting with specular and Fresnel
-- Camera with WASD + mouse look (right click)
-- Tornado follows the mouse position
+- Procedural tornado mesh with swirl animation + particle system (2200 particles)
+- Infinite procedurally generated world: terrain heightmap, water, houses, trees, fences, cars, poles
+- Wave-based gameplay: 10 waves with EF0–EF5 tornado scales, combo multiplier, power-ups
+- Victory and game-over conditions, local leaderboard, score sharing
+- Day/night cycle, storm weather (rain, lightning + thunder), camera shake
+- Web Audio procedural sound effects (wind, destruction, thunder, jingles)
+- HUD with minimap, compass, wave progress — drawn in a single batched call
+- Mobile touch controls (virtual joystick + camera look), quality presets, persisted settings
 - Dual build: native (OpenGL 3.3) and browser (WebGL 2 / WASM)
 
 ## Requirements
@@ -96,26 +98,29 @@ Tests cover:
 - Simulation logic (tornado interpolation, vortex, damping, camera)
 - GLSL adaptation (patch #version 330 core -> 300 es)
 
+## Deploy (VPS)
+
+```bash
+source ~/emsdk/emsdk_env.sh
+./deploy_vps.sh    # builds, runs tests, stamps the version and copies to /var/www
+```
+
+The script stamps the git hash into `index.html` (`?v=<hash>` on `tornado.js/.wasm/.data`),
+so the long-lived immutable HTTP cache is busted on every deploy.
+
 ## Project Structure
 
 ```
 ├── CMakeLists.txt          # Build system (dual: native + Emscripten)
 ├── build_wasm.sh           # WASM build script
+├── deploy_vps.sh           # Build + cache-busted deploy to the VPS web root
 ├── run.sh                  # Native build & run script
 ├── web/
-│   └── shell.html          # HTML template for WASM
+│   └── shell.html          # HTML template for WASM (UI, touch controls, leaderboard)
 ├── src/
 │   ├── main.cpp            # Main application (AppState + main_loop)
-│   ├── gltf_loader.h       # Simple glTF loader
-│   ├── tinygltf_impl.cpp   # tinygltf + stb_image implementation
 │   └── test_math.cpp       # Unit tests (21 tests)
-├── shaders/
-│   ├── vertex.glsl         # Main vertex shader (swirl)
-│   ├── fragment.glsl       # Fragment shader (objects + tornado)
-│   ├── particle_vertex.glsl
-│   └── particle_fragment.glsl
-├── assets/models/           # glTF models (BoxTextured, Avocado)
-└── vendor/                  # Header-only dependencies (tinygltf, stb, json)
+└── shaders/                # GLSL: scene, particles, sky, rain, HUD
 ```
 
 ## Porting Architecture: Desktop -> WASM

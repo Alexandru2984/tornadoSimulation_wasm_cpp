@@ -249,8 +249,15 @@
         var statusElement = document.getElementById('status');
         var spinnerElement = document.getElementById('spinner');
 
+        // Stamped by deploy_vps.sh; busts the long-lived immutable cache on
+        // tornado.wasm / tornado.data when a new build is deployed.
+        var TORNADO_BUILD = '';
+
         var Module = {
             canvas: (function() { return document.getElementById('canvas'); })(),
+            locateFile: function(path) {
+                return TORNADO_BUILD ? path + '?v=' + TORNADO_BUILD : path;
+            },
             print: function(text) { console.log(text); },
             printErr: function(text) { console.error(text); },
             setStatus: function(text) {
