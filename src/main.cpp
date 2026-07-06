@@ -1616,8 +1616,12 @@ static void main_loop() {
         glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(model));
         glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
         glUniform1f(mu.enableSwirl, 1.0f);
-        glUniform3f(mu.tint, 0.8f, 0.8f, 0.9f);
-        glUniform1f(mu.opacity, 0.7f);
+        // Darker, angrier funnel as the EF scale climbs (EF0 pale grey → EF5 near-black)
+        float ef = std::clamp(s.wave.efScale, 0, 5) / 5.0f;
+        glm::vec3 tornadoTint = glm::mix(glm::vec3(0.8f, 0.8f, 0.9f),
+                                         glm::vec3(0.28f, 0.26f, 0.34f), ef);
+        glUniform3fv(mu.tint, 1, glm::value_ptr(tornadoTint));
+        glUniform1f(mu.opacity, 0.7f + 0.2f * ef); // denser at high EF
         glUniform1i(mu.objType, 0);
         glUniform1i(mu.hasAlbedo, 0);
         glBindVertexArray(s.tornadoVAO);
@@ -1712,13 +1716,17 @@ static void main_loop() {
     int innerDraw = std::min(INNER_PARTICLES, g_activeParticles);
     int outerDraw = std::max(0, g_activeParticles - INNER_PARTICLES);
 
+    // Debris darkens with EF scale so a violent tornado looks dirtier
+    float efp = std::clamp(s.wave.efScale, 0, 5) / 5.0f;
+    float efDark = 1.0f - 0.35f * efp;
+
     // inner (dense dark dust)
-    glUniform3f(pu.color, 0.25f, 0.22f, 0.2f);
+    glUniform3f(pu.color, 0.25f * efDark, 0.22f * efDark, 0.2f * efDark);
     glUniform1f(pu.pointScale, 1.5f);
     if (innerDraw > 0) glDrawArrays(GL_POINTS, 0, innerDraw);
 
     // outer (lighter debris)
-    glUniform3f(pu.color, 0.5f, 0.45f, 0.35f);
+    glUniform3f(pu.color, 0.5f * efDark, 0.45f * efDark, 0.35f * efDark);
     glUniform1f(pu.pointScale, 2.0f);
     if (outerDraw > 0) glDrawArrays(GL_POINTS, INNER_PARTICLES, outerDraw);
 
