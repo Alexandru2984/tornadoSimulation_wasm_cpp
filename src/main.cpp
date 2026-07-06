@@ -1906,31 +1906,8 @@ static void main_loop() {
         glUniform1f(mu.opacity, 1.0f);
     }
 
-    // -- Tornado path trail (ghost cones) --
-    if (!s.tornadoTrail.empty()) {
-        int trailLen = (int)s.tornadoTrail.size();
-        int trailStart = std::max(0, trailLen - 10);
-        glUniform1f(mu.enableSwirl, 1.0f);
-        glUniform1i(mu.objType, 0);
-        glUniform1i(mu.hasAlbedo, 0);
-        for (int ti = trailStart; ti < trailLen - 1; ++ti) {
-            float age = (float)(trailLen - 1 - ti) / 10.0f; // 0=newest, 1=oldest
-            float opacity = (1.0f - age) * 0.22f;
-            if (opacity < 0.01f) continue;
-            float ghostScale = s.tornadoScale * (0.25f + 0.15f * (1.0f - age));
-            glm::vec2 tp = s.tornadoTrail[ti];
-            float ty = getTerrainHeight(tp.x, tp.y);
-            glm::mat4 trailModel = glm::translate(glm::mat4(1.0f), glm::vec3(tp.x, ty, tp.y));
-            trailModel = glm::scale(trailModel, glm::vec3(ghostScale));
-            glm::mat3 nm = normalMat3(trailModel);
-            glUniformMatrix4fv(mu.model, 1, GL_FALSE, glm::value_ptr(trailModel));
-            glUniformMatrix3fv(mu.normalMat, 1, GL_FALSE, glm::value_ptr(nm));
-            glUniform3f(mu.tint, 0.55f, 0.55f, 0.75f);
-            glUniform1f(mu.opacity, opacity);
-            glBindVertexArray(s.tornadoVAO);
-            glDrawElements(GL_TRIANGLES, s.tornadoIndexCount, GL_UNSIGNED_INT, nullptr);
-        }
-    }
+    // (The path is shown on the minimap and via ground scorch marks; no 3D
+    //  ghost cones — they read as multiple tornadoes and confuse the motion.)
 
     // -- Tornado mesh (swirl enabled, semi-transparent) --
     {
