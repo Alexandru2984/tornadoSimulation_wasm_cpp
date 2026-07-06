@@ -49,5 +49,7 @@
 !shaders/
 !src/
 
-# Leaderboard database (created by the service at runtime)
+# Leaderboard database + backups + logs (created at runtime)
 /server/scores.db
+/server/backups/
+/server/backup.log
