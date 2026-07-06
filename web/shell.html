@@ -192,11 +192,32 @@
             margin-bottom: 12px;
             font-size: 1.1rem;
         }
-        #scores-list {
+        #scores-box h3 {
+            color: #7ec8e3;
+            font-size: 0.85rem;
+            margin: 10px 0 4px;
+        }
+        #scores-list, #scores-global {
             list-style: none;
             font-size: 0.85rem;
             line-height: 1.8;
             color: #ddd;
+        }
+        #name-row {
+            text-align: center;
+            font-size: 0.8rem;
+            color: #aaa;
+            margin-bottom: 4px;
+        }
+        #player-name {
+            background: #10101f;
+            border: 1px solid rgba(126,200,227,0.35);
+            border-radius: 4px;
+            color: #eee;
+            padding: 3px 8px;
+            width: 140px;
+            font-size: 0.8rem;
+            font-family: inherit;
         }
         #scores-close {
             display: block;
@@ -437,6 +458,13 @@
     <div id="scores-modal" class="hidden">
         <div id="scores-box">
             <h2>🏆 Top Scoruri</h2>
+            <div id="name-row">
+                <label>Nume: <input id="player-name" maxlength="16"
+                       placeholder="ANONIM" autocomplete="off"></label>
+            </div>
+            <h3>🌍 Global</h3>
+            <ul id="scores-global"></ul>
+            <h3>💻 Local</h3>
             <ul id="scores-list"></ul>
             <button id="scores-close">Inchide</button>
         </div>
@@ -511,25 +539,60 @@
             }
         });
 
+        function fillScoreList(listEl, scores, formatFn) {
+            listEl.textContent = '';
+            if (!scores || scores.length === 0) {
+                var li = document.createElement('li');
+                li.textContent = 'Niciun scor.';
+                listEl.appendChild(li);
+                return;
+            }
+            scores.forEach(function(sc, i) {
+                var li = document.createElement('li');
+                li.textContent = formatFn(sc, i);
+                listEl.appendChild(li);
+            });
+        }
+
         document.getElementById('btn-scores').addEventListener('click', function() {
             var modal = document.getElementById('scores-modal');
-            var list  = document.getElementById('scores-list');
+            // Player name (used for global submissions)
+            var nameInput = document.getElementById('player-name');
+            try { nameInput.value = localStorage.getItem('tornado3d_name') || ''; } catch(e) {}
+
+            // Local scores
             var scores = [];
             try { scores = JSON.parse(localStorage.getItem('tornado3d_scores') || '[]'); } catch(e) {}
-            list.textContent = '';
-            if (scores.length === 0) {
-                var li = document.createElement('li');
-                li.textContent = 'Niciun scor salvat.';
-                list.appendChild(li);
-            } else {
-                scores.forEach(function(sc, i) {
-                    var li = document.createElement('li');
-                    li.textContent = '#' + (i+1) + ' — ' + sc.score + ' puncte · Val ' +
-                                     sc.wave + ' · ' + (sc.date || '');
-                    list.appendChild(li);
+            fillScoreList(document.getElementById('scores-list'), scores, function(sc, i) {
+                return '#' + (i+1) + ' — ' + sc.score + ' puncte · Val ' + sc.wave + ' · ' + (sc.date || '');
+            });
+
+            // Global scores
+            var globalList = document.getElementById('scores-global');
+            globalList.textContent = '';
+            var loading = document.createElement('li');
+            loading.textContent = 'Se incarca...';
+            globalList.appendChild(loading);
+            fetch('/api/scores').then(function(r) { return r.json(); }).then(function(gs) {
+                fillScoreList(globalList, gs, function(sc, i) {
+                    return '#' + (i+1) + ' — ' + sc.name + ': ' + sc.score +
+                           ' puncte · Val ' + sc.wave + ' · ' + (sc.date || '');
                 });
-            }
+            }).catch(function() {
+                globalList.textContent = '';
+                var li = document.createElement('li');
+                li.textContent = 'Indisponibil momentan.';
+                globalList.appendChild(li);
+            });
+
             modal.classList.remove('hidden');
+        });
+
+        // Persist the player name; keep it to the characters the API accepts
+        document.getElementById('player-name').addEventListener('input', function() {
+            var clean = this.value.replace(/[^A-Za-z0-9 _.-]/g, '').slice(0, 16);
+            if (clean !== this.value) this.value = clean;
+            try { localStorage.setItem('tornado3d_name', clean); } catch(e) {}
         });
         document.getElementById('scores-close').addEventListener('click', function() {
             document.getElementById('scores-modal').classList.add('hidden');
@@ -537,7 +600,7 @@
 
         var lastRPress = 0;
         window.addEventListener('keydown', function(e) {
-            if (e.target && e.target.tagName === 'BUTTON') return;
+            if (e.target && (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT')) return;
             if (e.code === 'KeyF') document.getElementById('btn-fullscreen').click();
             // Only use Escape as pause when NOT exiting fullscreen
             if (e.code === 'KeyP' || (e.code === 'Escape' && !document.fullscreenElement))

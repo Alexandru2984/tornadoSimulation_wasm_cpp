@@ -1105,6 +1105,17 @@ EM_JS(void, js_saveScore, (int score, int wave), {
         if (scores.length > 10) scores = scores.slice(0, 10);
         localStorage.setItem(key, JSON.stringify(scores));
     } catch(e) {}
+    // Submit to the global leaderboard too (fire and forget)
+    try {
+        if (score > 0 && typeof fetch === "function") {
+            var name = (localStorage.getItem("tornado3d_name") || "ANONIM").slice(0, 16);
+            fetch("/api/scores", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({name: name, score: score, wave: wave})
+            }).catch(function(){});
+        }
+    } catch(e) {}
 });
 
 EM_JS(int, js_getHighScore, (), {

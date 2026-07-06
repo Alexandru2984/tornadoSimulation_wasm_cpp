@@ -1,0 +1,15 @@
+[Unit]
+Description=Tornado 3D leaderboard API
+After=network.target
+
+[Service]
+User=micu
+ExecStart=/usr/bin/python3 /home/micu/tornado/server/leaderboard.py
+WorkingDirectory=/home/micu/tornado/server
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
