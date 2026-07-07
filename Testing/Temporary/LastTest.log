@@ -1,10 +1,10 @@
-Start testing: Jul 06 20:00 UTC
+Start testing: Jul 07 00:01 UTC
 ----------------------------------------------------------
 1/1 Testing: test_math
 1/1 Test: test_math
-Command: "/home/runner/work/_temp/974dd929-39a7-4d7e-a684-b70c08fd4a7f/emsdk-main/node/22.16.0_64bit/bin/node" "/home/runner/work/tornadoSimulation_wasm_cpp/tornadoSimulation_wasm_cpp/build-wasm/test_math.js"
+Command: "/home/runner/work/_temp/45e66b27-ecdf-4b29-9e8a-9868b8b7d138/emsdk-main/node/22.16.0_64bit/bin/node" "/home/runner/work/tornadoSimulation_wasm_cpp/tornadoSimulation_wasm_cpp/build-wasm/test_math.js"
 Directory: /home/runner/work/tornadoSimulation_wasm_cpp/tornadoSimulation_wasm_cpp/build-wasm
-"test_math" start time: Jul 06 20:00 UTC
+"test_math" start time: Jul 07 00:01 UTC
 Output:
 ----------------------------------------------------------
 Running 21 tests...
@@ -36,8 +36,8 @@ Running 21 tests...
 Test time =   0.04 sec
 ----------------------------------------------------------
 Test Passed.
-"test_math" end time: Jul 06 20:00 UTC
+"test_math" end time: Jul 07 00:01 UTC
 "test_math" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Jul 06 20:00 UTC
+End testing: Jul 07 00:01 UTC
