@@ -365,8 +365,7 @@
     <div id="canvas-container">
         <button id="menu-toggle" aria-label="Meniu">&#9776;</button>
         <button id="pause-toggle" aria-label="Pauza">&#9208;</button>
-        <canvas class="emscripten" id="canvas"
-                oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+        <canvas class="emscripten" id="canvas" tabindex="-1"></canvas>
         <div id="spinner">
             <div class="loader"></div>
             <div>Se incarca...</div>
@@ -497,6 +496,10 @@
                 canvas.height = bh;
             }
         }
+        // Suppress the right-click menu on the canvas (was an inline handler)
+        document.getElementById('canvas').addEventListener('contextmenu', function(e) {
+            e.preventDefault();
+        });
         window.addEventListener('resize', resizeCanvas);
         // Orientation changes need a tick for the new layout to settle
         window.addEventListener('orientationchange', function() {
