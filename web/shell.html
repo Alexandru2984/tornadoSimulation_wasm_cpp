@@ -88,7 +88,21 @@
         }
         @media (hover: none) and (pointer: coarse) {
             #controls { display: none; }
-            #controls.show { display: flex; }
+            /* When opened on mobile the menu overlays everything — including
+               the pseudo-fullscreen container (z-index 300) — as a top bar,
+               placed just below the floating menu/pause buttons. */
+            #controls.show {
+                display: flex;
+                position: fixed;
+                top: 52px; left: 4px; right: 4px;
+                z-index: 400;
+                justify-content: center;
+                background: rgba(18,22,38,0.94);
+                padding: 8px 6px;
+                border-radius: 8px;
+                border: 1px solid rgba(126,200,227,0.3);
+            }
+            #menu-toggle, #pause-toggle { z-index: 401; }
             #menu-toggle { display: block; }
             #pause-toggle { display: block; }
         }
@@ -878,7 +892,18 @@
         function unlockAudio() {
             if (Module && Module._notify_user_gesture) Module._notify_user_gesture();
             var a = window._tornadoAudio;
-            if (a && a.ctx && a.ctx.state === 'suspended') a.ctx.resume();
+            if (a && a.ctx) {
+                if (a.ctx.state === 'suspended') a.ctx.resume();
+                // iOS/WKWebView: playing a 1-sample silent buffer *inside* the
+                // gesture is what actually unlocks audio output; resume() alone
+                // is often not enough on Safari/Brave.
+                try {
+                    var src = a.ctx.createBufferSource();
+                    src.buffer = a.ctx.createBuffer(1, 1, 22050);
+                    src.connect(a.ctx.destination);
+                    src.start(0);
+                } catch (e) {}
+            }
             // Respect a mute chosen before audio existed
             if (soundMuted && a) {
                 if (a.windGain)  a.windGain.gain.value = 0;
