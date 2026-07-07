@@ -36,16 +36,21 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
+    # Security headers. nginx add_header does NOT inherit once a block sets any
+    # add_header of its own, so list them all together.
+    #
     # IMPORTANT: WebAssembly instantiation is blocked by a strict CSP unless
-    # script-src allows 'wasm-unsafe-eval'. A CSP of just
-    #   script-src 'self' 'unsafe-inline'
-    # leaves the page stuck on "Downloading data..." with a black canvas and a
-    # console error: "...violates ... script-src ... 'unsafe-eval' is not allowed".
-    # 'wasm-unsafe-eval' permits WebAssembly compilation only (NOT JS eval).
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none';" always;
+    # script-src allows 'wasm-unsafe-eval' (permits WASM compilation only, NOT
+    # JS eval). Without it the page hangs on "Downloading data..." with a black
+    # canvas. The Cloudflare hosts are for CF's injected analytics beacon.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Content-Type-Options "nosniff" always;
-    # (add your other security headers here too — nginx add_header does not
-    #  inherit once a block sets any add_header of its own)
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Resource-Policy "same-origin" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://static.cloudflareinsights.com https://cloudflareinsights.com; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests;" always;
 
     listen 443 ssl;
     # ssl_certificate ... (managed by certbot)
