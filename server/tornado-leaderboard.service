@@ -3,13 +3,51 @@ Description=Tornado 3D leaderboard API
 After=network.target
 
 [Service]
-User=micu
-ExecStart=/usr/bin/python3 /home/micu/tornado/server/leaderboard.py
-WorkingDirectory=/home/micu/tornado/server
+# Dedicated unprivileged system user; code lives in /opt (read-only), the
+# writable SQLite DB in /var/lib. Nothing the service touches is under /home.
+User=tornadolb
+Group=tornadolb
+Environment=TORNADO_DB=/var/lib/tornado-leaderboard/scores.db
+ExecStart=/usr/bin/python3 /opt/tornado-leaderboard/leaderboard.py
+WorkingDirectory=/var/lib/tornado-leaderboard
 Restart=on-failure
 RestartSec=3
+
+# ── Sandboxing (reduce blast radius if the Python server is compromised) ──
+# Filesystem: whole FS read-only, /home fully hidden; only the data dir is writable.
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tornado-leaderboard
+PrivateTmp=true
+UMask=0027
+
+# Privileges & kernel surface
 NoNewPrivileges=true
-ProtectSystem=full
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+
+# Network: loopback only (listens on 127.0.0.1, never dials out).
+RestrictAddressFamilies=AF_INET AF_INET6
+IPAddressAllow=localhost
+IPAddressDeny=any
+
+# Syscalls: allow only what a normal service needs.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

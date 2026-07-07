@@ -9,13 +9,16 @@ Stores everything in SQLite next to this file. Submissions are
 rate-limited to one per IP every 20 seconds.
 """
 import json
+import os
 import re
 import sqlite3
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "scores.db"
+# Data dir is configurable so the service can keep its writable state outside
+# the code tree (production: /var/lib/tornado-leaderboard; dev: next to this file).
+DB_PATH = Path(os.environ.get("TORNADO_DB", str(Path(__file__).parent / "scores.db")))
 NAME_RE = re.compile(r"^[A-Za-z0-9 _.-]{1,16}$")
 MAX_BODY = 512
 RATE_SECONDS = 20

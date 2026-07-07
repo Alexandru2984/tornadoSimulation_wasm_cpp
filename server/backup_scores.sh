@@ -11,7 +11,10 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DB="$DIR/scores.db"
+# Production DB lives in /var/lib (owned by the tornadolb service user, group-
+# readable). Falls back to the dev copy next to this script.
+DB="${TORNADO_DB:-/var/lib/tornado-leaderboard/scores.db}"
+[ -f "$DB" ] || DB="$DIR/scores.db"
 BACKUP_DIR="${BACKUP_DIR:-$DIR/backups}"
 KEEP="${KEEP:-14}"
 

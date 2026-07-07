@@ -48,4 +48,16 @@ if ! grep -q "tornado.js?v=$V" "$DEST/index.html"; then
     exit 1
 fi
 
+# Sync the leaderboard service code to /opt (runs as the sandboxed tornadolb
+# user) and restart it if the source changed. Needs sudo; skipped if absent.
+LB_SRC="server/leaderboard.py"
+LB_DST="/opt/tornado-leaderboard/leaderboard.py"
+if command -v sudo >/dev/null && [ -f "$LB_SRC" ] && [ -d /opt/tornado-leaderboard ]; then
+    if ! sudo cmp -s "$LB_SRC" "$LB_DST" 2>/dev/null; then
+        echo "[INFO] Leaderboard code changed -> syncing to /opt + restarting service"
+        sudo install -o root -g root -m 0644 "$LB_SRC" "$LB_DST"
+        sudo systemctl restart tornado-leaderboard.service
+    fi
+fi
+
 echo "[OK] Deploy complet: https://tornado.micutu.com (build $V)"
