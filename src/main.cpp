@@ -1226,7 +1226,7 @@ static void main_loop() {
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
-                newPoints += 100.0f;
+                newPoints += PTS_HOUSE;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ, TORNADO_MAX_SCALE);
                 if ((int)s.scorchMarks.size() >= MAX_SCORCH_MARKS)
                     s.scorchMarks.erase(s.scorchMarks.begin());
@@ -1250,7 +1250,7 @@ static void main_loop() {
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
-                newPoints += 30.0f;
+                newPoints += PTS_TREE;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.5f, TORNADO_MAX_SCALE);
             }
         }
@@ -1273,9 +1273,9 @@ static void main_loop() {
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
-                // car=50pts, fence=20pts, pole=15pts
-                float propPts = (pr.propType == 1) ? 50.0f : (pr.propType == 0 ? 20.0f : 15.0f);
-                newPoints += propPts;
+                int propPts = (pr.propType == 1) ? PTS_PARKED_CAR
+                            : (pr.propType == 0 ? PTS_FENCE : PTS_POLE);
+                newPoints += (float)propPts;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.3f, TORNADO_MAX_SCALE);
             }
         }
@@ -1332,7 +1332,7 @@ static void main_loop() {
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
-                newPoints += (an.species == 1) ? 50.0f : 75.0f;
+                newPoints += (an.species == 1) ? PTS_SHEEP : PTS_COW;
                 if (an.species == 1) playBaaSound(); else playMooSound();
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.3f, TORNADO_MAX_SCALE);
             }
@@ -1374,7 +1374,7 @@ static void main_loop() {
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
-                newPoints += 90.0f;         // moving target → worth more
+                newPoints += PTS_VEHICLE;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.4f, TORNADO_MAX_SCALE);
             }
         }
@@ -1420,7 +1420,7 @@ static void main_loop() {
                 s.score.totalDestroyed++;
                 s.wave.destroyed++;
                 destroyedSomething = true;
-                newPoints += 60.0f;
+                newPoints += PTS_BIRD;
                 s.tornadoScale = std::min(s.tornadoScale + TORNADO_GROWTH_PER_OBJ * 0.25f, TORNADO_MAX_SCALE);
             }
         }
@@ -1435,8 +1435,8 @@ static void main_loop() {
         if (t - s.lastHapticTime > 0.18f) { vibrate(12); s.lastHapticTime = t; }
         // Combo: increment, apply multiplier, reset timer
         s.comboCount++;
-        s.comboTimer      = 2.5f;
-        s.comboMultiplier = 1.0f + std::min(s.comboCount / 3.0f, 4.0f);
+        s.comboTimer      = COMBO_WINDOW;
+        s.comboMultiplier = 1.0f + std::min(s.comboCount / COMBO_STEP, COMBO_MAX_MULT - 1.0f);
         if (s.comboCount > s.maxCombo) s.maxCombo = s.comboCount;
         int awarded = (int)(newPoints * s.comboMultiplier * scoreMult);
         s.score.scorePoints += awarded;
@@ -1467,7 +1467,7 @@ static void main_loop() {
             saveScore(s.score.scorePoints, s.wave.number);
         } else {
             s.wave.number++;
-            s.wave.target = WAVE_BASE_TARGET + (s.wave.number - 1) * 3;
+            s.wave.target = WAVE_BASE_TARGET + (s.wave.number - 1) * WAVE_TARGET_STEP;
             s.wave.destroyed = 0;
             s.wave.announceTimer = 0.0f;
             s.wave.efScale = std::min(s.wave.number / 2, 5);
@@ -2563,7 +2563,7 @@ static void main_loop() {
         glfwGetKey(s.window, GLFW_KEY_E) == GLFW_PRESS) {
         s.endlessMode = true;
         s.wave.number++;
-        s.wave.target = WAVE_BASE_TARGET + (s.wave.number - 1) * 3;
+        s.wave.target = WAVE_BASE_TARGET + (s.wave.number - 1) * WAVE_TARGET_STEP;
         s.wave.destroyed = 0;
         s.wave.announceTimer = 0.0f;
         s.wave.efScale = 5;

@@ -85,6 +85,24 @@ static const float TORNADO_DECAY_GRACE   = 2.0f;   // seconds after last destroy
 static const int   TOTAL_WAVES           = 10;
 static const float WAVE_ANNOUNCE_TIME    = 3.0f;    // seconds to show "WAVE X"
 static const int   WAVE_BASE_TARGET      = 5;       // wave 1 target = 5 destroys
+static const int   WAVE_TARGET_STEP      = 3;       // each wave needs 3 more
+
+// Scoring — base points per destroyed object. The leaderboard server checks
+// submissions against these (server/leaderboard.py, pinned by its tests).
+static const int   PTS_HOUSE             = 100;
+static const int   PTS_TREE              = 30;
+static const int   PTS_FENCE             = 20;
+static const int   PTS_PARKED_CAR        = 50;
+static const int   PTS_POLE              = 15;
+static const int   PTS_COW               = 75;
+static const int   PTS_SHEEP             = 50;
+static const int   PTS_VEHICLE           = 90;      // moving target, worth more
+static const int   PTS_BIRD              = 60;
+
+// Combo: multiplier = 1 + min(combo / COMBO_STEP, COMBO_MAX_MULT - 1)
+static const float COMBO_STEP            = 3.0f;
+static const float COMBO_MAX_MULT        = 5.0f;
+static const float COMBO_WINDOW          = 2.5f;    // seconds to keep a combo alive
 
 // Game over: tornado stuck at minimum size for this long = defeat
 static const float GAMEOVER_FADE_TIME    = 12.0f;

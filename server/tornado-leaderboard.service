@@ -1,51 +1,70 @@
 [Unit]
 Description=Tornado 3D leaderboard API
-After=network.target
+Documentation=https://github.com/Alexandru2984/tornadoSimulation_wasm_cpp
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
+Type=simple
 # Dedicated unprivileged system user; code lives in /opt (read-only), the
 # writable SQLite DB in /var/lib. Nothing the service touches is under /home.
 User=tornadolb
 Group=tornadolb
 Environment=TORNADO_DB=/var/lib/tornado-leaderboard/scores.db
-ExecStart=/usr/bin/python3 /opt/tornado-leaderboard/leaderboard.py
+Environment=TORNADO_ORIGINS=https://tornado.micutu.com
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -I /opt/tornado-leaderboard/leaderboard.py
 WorkingDirectory=/var/lib/tornado-leaderboard
 Restart=on-failure
 RestartSec=3
 
+# ── Resource limits ──
+TasksMax=64
+LimitNOFILE=4096
+MemoryMax=256M
+CPUQuota=50%
+
 # ── Sandboxing (reduce blast radius if the Python server is compromised) ──
-# Filesystem: whole FS read-only, /home fully hidden; only the data dir is writable.
+# Filesystem: whole FS read-only, /home hidden; only the data dir is writable.
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=yes
 ReadWritePaths=/var/lib/tornado-leaderboard
-PrivateTmp=true
-UMask=0027
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+UMask=0077
 
 # Privileges & kernel surface
-NoNewPrivileges=true
+NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-ProtectClock=true
-ProtectHostname=true
+PrivateUsers=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
 ProtectProc=invisible
-RestrictNamespaces=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-LockPersonality=true
-RemoveIPC=true
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+KeyringMode=private
+RemoveIPC=yes
 
 # Network: loopback only (listens on 127.0.0.1, never dials out).
 RestrictAddressFamilies=AF_INET AF_INET6
 IPAddressAllow=localhost
 IPAddressDeny=any
 
-# Syscalls: allow only what a normal service needs.
+# Syscalls: a normal service, minus privileged and resource-tuning calls.
 SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 

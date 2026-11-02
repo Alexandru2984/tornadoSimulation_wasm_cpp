@@ -5,8 +5,9 @@
 # Uses SQLite's online ".backup" so it is safe while the service writes.
 # Keeps the newest KEEP backups and prunes the rest.
 #
-# Wire it up with cron, e.g. every 6 hours:
-#   0 */6 * * * /home/micu/tornado/server/backup_scores.sh >> /home/micu/tornado/server/backup.log 2>&1
+# Wire it up with cron or a systemd timer, e.g. every 6 hours:
+#   0 */6 * * * /path/to/server/backup_scores.sh >> /var/log/tornado-backup.log 2>&1
+# Must run as a user that can read the DB (root or the tornadolb user).
 # ─────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -23,17 +24,29 @@ if [ ! -f "$DB" ]; then
     exit 0
 fi
 
+umask 077
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="$BACKUP_DIR/scores-$STAMP.db"
 
-# Online backup (consistent even while the API is writing)
-sqlite3 "$DB" ".backup '$OUT'"
+case "$OUT" in *"'"*) echo "backup path must not contain quotes" >&2; exit 1 ;; esac
+
+# Online backup (consistent even while the API is writing, WAL included),
+# then verify the copy before trusting it.
+sqlite3 -readonly "$DB" ".timeout 10000" ".backup '$OUT'"
+if [ "$(sqlite3 "$OUT" 'PRAGMA quick_check;')" != "ok" ]; then
+    echo "[$(date -Is)] integrity check FAILED for $OUT" >&2
+    rm -f "$OUT"
+    exit 1
+fi
+chmod 600 "$OUT"
 echo "[$(date -Is)] backed up -> $OUT ($(stat -c%s "$OUT") bytes)"
 
 # Prune: keep only the newest $KEEP backups
-ls -1t "$BACKUP_DIR"/scores-*.db 2>/dev/null | tail -n +"$((KEEP + 1))" | while read -r f; do
-    rm -f "$f" && echo "[$(date -Is)] pruned $f"
-done
+find "$BACKUP_DIR" -maxdepth 1 -name 'scores-*.db' -printf '%T@ %p\n' \
+    | sort -rn | tail -n +"$((KEEP + 1))" | cut -d' ' -f2- \
+    | while IFS= read -r f; do
+        rm -f -- "$f" && echo "[$(date -Is)] pruned $f"
+    done
 
 exit 0
