@@ -32,9 +32,17 @@ function build() {
     echo "  Pentru a testa: ./build_wasm.sh serve"
 }
 
+function dist() {
+    build
+    local v
+    v="$(git rev-parse --short HEAD 2>/dev/null || echo local)"
+    python3 "$(dirname "$0")/tools/package_site.py" --build "$BUILD_DIR" --out dist --version "$v"
+    echo "  Test (service worker inclus): python3 tools/dev_server.py dist"
+}
+
 function clean() {
-    echo "[INFO] Se sterge $BUILD_DIR/..."
-    rm -rf "$BUILD_DIR"
+    echo "[INFO] Se sterg $BUILD_DIR/ si dist/..."
+    rm -rf "$BUILD_DIR" dist
     echo "[OK] Curat."
 }
 
@@ -53,6 +61,7 @@ function help() {
     echo ""
     echo "Optiuni:"
     echo "  build    - Compileaza pentru WASM (implicit)"
+    echo "  dist     - Build + pachet de productie in dist/ (nume cu hash, ca la deploy)"
     echo "  clean    - Sterge directorul de build WASM"
     echo "  serve    - Porneste serverul local (headere ca in productie) pe http://localhost:\$PORT"
     echo "  help     - Afiseaza acest mesaj"
@@ -63,6 +72,7 @@ function help() {
 
 case "${1:-build}" in
     build)   build ;;
+    dist)    dist ;;
     clean)   clean ;;
     serve)   serve ;;
     help)    help  ;;
