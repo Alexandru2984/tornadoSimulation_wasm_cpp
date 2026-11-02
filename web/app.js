@@ -1066,7 +1066,10 @@
         if (build.build !== 'dev') {
             var hadController = !!navigator.serviceWorker.controller;
             window.addEventListener('load', function () {
-                navigator.serviceWorker.register('sw.js').catch(function () { /* offline mode is optional */ });
+                // updateViaCache 'none': update checks always reach the server, even
+                // where a CDN rewrites sw.js's Cache-Control into a long max-age.
+                navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+                    .catch(function () { /* offline mode is optional */ });
             });
             navigator.serviceWorker.addEventListener('controllerchange', function () {
                 // A new deploy took over. Never reload mid-run; just say so.
