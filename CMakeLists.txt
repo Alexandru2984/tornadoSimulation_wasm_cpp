@@ -73,7 +73,11 @@ if(NOT TORNADO_BUILD_GAME)
 elseif(USING_EMSCRIPTEN)
     add_executable(tornado src/main.cpp)
     # --- Emscripten / WebGL 2 build ---
-    set_target_properties(tornado PROPERTIES SUFFIX ".html")
+    # Emit tornado.js/.wasm/.data only. The page is web/index.html, a plain
+    # static file: emcc's --shell-file minifies it and forces an inline
+    # {{{ SCRIPT }}} tag, while web/app.js loads tornado.js itself after
+    # checking WebGL 2 support (so unsupported browsers get a real message).
+    set_target_properties(tornado PROPERTIES SUFFIX ".js")
 
     target_compile_definitions(tornado PRIVATE "PLATFORM_EMSCRIPTEN")
 
@@ -87,21 +91,19 @@ elseif(USING_EMSCRIPTEN)
         "SHELL:-s ENVIRONMENT=web"
         "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/shaders@shaders"
         "SHELL:-s EXPORTED_FUNCTIONS=['_main','_touch_set_move','_touch_set_look','_touch_set_cursor','_set_quality','_toggle_sound','_set_paused','_restart_game','_get_score_points','_get_game_phase','_start_time_attack','_set_difficulty','_notify_user_gesture','_start_run','_enter_menu','_continue_endless','_set_reduced_motion','_get_run_stat']"
-        "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
     )
 
-    # Use custom HTML shell if it exists
-    if(EXISTS "${CMAKE_SOURCE_DIR}/web/shell.html")
-        target_link_options(tornado PRIVATE
-            "SHELL:--shell-file ${CMAKE_SOURCE_DIR}/web/shell.html"
-        )
-    endif()
-
-    # Force a relink when the shell or preloaded shaders change — otherwise
-    # editing only the HTML/GLSL leaves a stale tornado.html/.data behind.
+    # Force a relink when a preloaded shader changes — otherwise editing only
+    # GLSL leaves a stale tornado.data behind.
     file(GLOB TORNADO_SHADERS "${CMAKE_SOURCE_DIR}/shaders/*.glsl")
-    set_target_properties(tornado PROPERTIES
-        LINK_DEPENDS "${CMAKE_SOURCE_DIR}/web/shell.html;${TORNADO_SHADERS}")
+    set_target_properties(tornado PROPERTIES LINK_DEPENDS "${TORNADO_SHADERS}")
+
+    # Copy the static site (index.html, app.js, style.css, icons, ...) next
+    # to the build output on every build, so build-wasm/ is servable as-is.
+    add_custom_target(web_assets ALL
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${CMAKE_SOURCE_DIR}/web ${CMAKE_CURRENT_BINARY_DIR}
+        COMMENT "Copying web/ into the build directory")
 
     target_link_libraries(tornado PRIVATE glm::glm)
 else()

@@ -4,7 +4,7 @@
 # Usage:
 #   ./build_wasm.sh [build|clean|serve|help]
 # ─────────────────────────────────────────────────────────────────────
-set -e
+set -euo pipefail
 
 BUILD_DIR="build-wasm"
 PORT="${PORT:-8080}"
@@ -27,7 +27,7 @@ function build() {
     emmake cmake --build "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 4)"
     echo ""
     echo "[OK] Build complet! Fisiere in $BUILD_DIR/"
-    echo "  -> tornado.html, tornado.js, tornado.wasm, tornado.data"
+    echo "  -> index.html, app.js, style.css, tornado.js, tornado.wasm, tornado.data"
     echo ""
     echo "  Pentru a testa: ./build_wasm.sh serve"
 }
@@ -39,37 +39,13 @@ function clean() {
 }
 
 function serve() {
-    if [ ! -f "$BUILD_DIR/tornado.html" ]; then
+    if [ ! -f "$BUILD_DIR/index.html" ] || [ ! -f "$BUILD_DIR/tornado.wasm" ]; then
         echo "[INFO] Build-ul nu exista. Se compileaza mai intai..."
         build
     fi
-    echo "[INFO] Server local pe http://localhost:$PORT/tornado.html"
-    echo "  (Ctrl+C pentru oprire)"
-    cd "$BUILD_DIR"
-
-    # Try emrun first (has COOP/COEP support built-in)
-    if command -v emrun &>/dev/null; then
-        emrun --no_browser --port "$PORT" tornado.html
-    elif command -v python3 &>/dev/null; then
-        # Custom server with COOP/COEP headers required for SharedArrayBuffer
-        python3 - <<'PYEOF'
-import http.server, sys, os
-port = int(os.environ.get('PORT', 8080))
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def end_headers(self):
-        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
-        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
-        self.send_header('Cross-Origin-Resource-Policy', 'same-origin')
-        super().end_headers()
-    def log_message(self, fmt, *args):
-        print(f'  {self.address_string()} {fmt % args}', flush=True)
-print(f'[Server] Listening on http://localhost:{port}', flush=True)
-http.server.HTTPServer(('', port), Handler).serve_forever()
-PYEOF
-    else
-        echo "[EROARE] Nu s-a gasit emrun sau python3 pentru server local."
-        exit 1
-    fi
+    # Same headers as production (strict CSP included) + /api/ proxied to the
+    # leaderboard on :8791 if it is running (python3 server/leaderboard.py).
+    exec python3 "$(dirname "$0")/tools/dev_server.py" "$BUILD_DIR" --port "$PORT"
 }
 
 function help() {
@@ -78,7 +54,7 @@ function help() {
     echo "Optiuni:"
     echo "  build    - Compileaza pentru WASM (implicit)"
     echo "  clean    - Sterge directorul de build WASM"
-    echo "  serve    - Porneste server local si deschide in browser"
+    echo "  serve    - Porneste serverul local (headere ca in productie) pe http://localhost:\$PORT"
     echo "  help     - Afiseaza acest mesaj"
     echo ""
     echo "Variabile de mediu:"

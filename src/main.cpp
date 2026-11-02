@@ -272,7 +272,7 @@ struct AppState {
     GLsizei waterIndexCount = 0;
 
     // Day/night
-    float dayTime = 0.25f;  // 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
+    float dayTime = 0.32f;  // 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset (start: morning)
 
     // Dynamic weather: 0=clear, 1=full storm — drifts toward a target
     float weatherIntensity = 0.7f;
