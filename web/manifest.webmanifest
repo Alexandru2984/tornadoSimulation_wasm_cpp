@@ -18,5 +18,13 @@
         { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
         { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
         { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+    ],
+    "screenshots": [
+        { "src": "screenshots/gameplay-wide.webp", "sizes": "1280x720", "type": "image/webp", "form_factor": "wide",
+          "label": "Tornada trece printr-un sat și ridică moloz în aer" },
+        { "src": "screenshots/menu-wide.webp", "sizes": "1280x720", "type": "image/webp", "form_factor": "wide",
+          "label": "Meniul principal: joc clasic, Time Attack și trei dificultăți" },
+        { "src": "screenshots/menu-narrow.webp", "sizes": "780x1688", "type": "image/webp", "form_factor": "narrow",
+          "label": "Meniul principal pe telefon" }
     ]
 }

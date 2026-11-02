@@ -1,10 +1,11 @@
 {
   "name": "tornado-e2e",
   "private": true,
-  "description": "Browser smoke test for Tornada 3D (see smoke.mjs)",
+  "description": "Browser smoke test and screenshot tool for Tornada 3D (see smoke.mjs, screenshots.mjs)",
   "type": "module",
   "scripts": {
-    "smoke": "node smoke.mjs ../../dist"
+    "smoke": "node smoke.mjs ../../dist",
+    "screenshots": "node screenshots.mjs ../../dist"
   },
   "devDependencies": {
     "playwright": "1.64.1"

@@ -50,7 +50,8 @@ HEADERS = load_headers()
 
 TYPES = {".wasm": "application/wasm", ".data": "application/octet-stream",
          ".webmanifest": "application/manifest+json", ".js": "text/javascript",
-         ".svg": "image/svg+xml", ".ico": "image/x-icon", ".xml": "application/xml"}
+         ".svg": "image/svg+xml", ".ico": "image/x-icon", ".xml": "application/xml",
+         ".webp": "image/webp"}
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):

@@ -60,6 +60,20 @@ class PackageSiteTest(unittest.TestCase):
             self.assertIn(f'<link rel="preload" href="{names[n]}"', html)
         self.assertIn(f'href="/{names["style.css"]}"', self.read("404.html"))
 
+    def test_manifest_screenshots(self):
+        self.run_package()
+        manifest = json.loads(self.read("manifest.webmanifest"))
+        shots = manifest["screenshots"]
+        self.assertEqual({s["form_factor"] for s in shots}, {"wide", "narrow"})
+        for s in shots:
+            self.assertEqual(ps.image_size(os.path.join(self.out, s["src"])),
+                             tuple(int(x) for x in s["sizes"].split("x")))
+        # A declared size that does not match the file fails verification.
+        manifest["screenshots"][0]["sizes"] = "640x360"
+        with open(os.path.join(self.out, "manifest.webmanifest"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+        self.assertTrue(any("declared 640x360" in p for p in ps.check_screenshots(self.out, manifest)))
+
     def test_service_worker_and_sitemap(self):
         names = self.run_package("v-9")
         sw = self.read("sw.js")

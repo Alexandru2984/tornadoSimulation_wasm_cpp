@@ -6,6 +6,8 @@ Emscripten/WASM). Live at **https://tornado.micutu.com**.
 
 [![CI](https://github.com/Alexandru2984/tornadoSimulation_wasm_cpp/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexandru2984/tornadoSimulation_wasm_cpp/actions/workflows/ci.yml)
 
+![Tornada 3D: the tornado tearing through a village](web/screenshots/gameplay-wide.webp)
+
 ## Features
 
 **Game**
@@ -27,7 +29,8 @@ Emscripten/WASM). Live at **https://tornado.micutu.com**.
   leaderboard placings), unlocked live on the results screen
 - Romanian and English (page and in-game HUD), picked from the browser's languages and
   switchable in Settings; the HTML stays Romanian for search engines
-- Installable app (manifest, icons) that also plays offline after the first visit
+- Installable app (manifest, icons, gameplay screenshots for the install dialog) that also
+  plays offline after the first visit
 - SEO: canonical URL, Open Graph / X preview card, JSON-LD, sitemap, robots, real 404
 
 **Engineering**
@@ -116,6 +119,9 @@ cd tests/e2e && npm ci && npx playwright install chromium && node smoke.mjs ../.
 The browser smoke test boots the packaged site in headless Chromium (SwiftShader) under the
 production CSP and fails on any console error or failed request. CI runs all of the above
 (`.github/workflows/ci.yml`).
+
+`node screenshots.mjs ../../dist` (same directory) plays a real run and regenerates
+`web/screenshots/`; the packager checks that their sizes match the manifest.
 
 ## Leaderboard API (v2)
 
@@ -211,10 +217,10 @@ check fails. Asset names carry a content hash, so nothing needs purging on Cloud
 │   └── test_math.cpp         # unit tests
 ├── shaders/                  # GLSL 330 core, patched to GLSL ES 300 for WebGL
 ├── web/                      # static site: index.html, app.js, i18n.js, style.css, sw.js,
-│                             # manifest, icons, robots.txt, sitemap.xml, 404.html
+│                             # manifest, icons, screenshots, robots.txt, sitemap.xml, 404.html
 ├── server/                   # leaderboard API + tests, systemd units, backup, nginx/
 ├── tools/                    # dev_server.py, package_site.py (+ tests), make_icons.js
-├── tests/e2e/                # Playwright smoke test (locked dependencies)
+├── tests/e2e/                # Playwright smoke test + screenshot tool (locked dependencies)
 └── .github/                  # CI workflow, Dependabot
 ```
 

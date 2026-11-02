@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import sys
 
 ENGINE = ("tornado.js", "tornado.wasm", "tornado.data")   # from the build dir
@@ -76,6 +77,50 @@ def local_refs(html):
         if ref in ("", "/"):
             continue
         yield ref
+
+
+def image_size(path):
+    """(width, height) of a PNG or WebP file, or None."""
+    with open(path, "rb") as f:
+        head = f.read(32)
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return struct.unpack(">II", head[16:24])
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        chunk = head[12:16]
+        if chunk == b"VP8X":                      # extended: 24-bit (size - 1)
+            return (int.from_bytes(head[24:27], "little") + 1, int.from_bytes(head[27:30], "little") + 1)
+        if chunk == b"VP8 ":                      # lossy: 14-bit sizes after the frame tag
+            w, h = struct.unpack("<HH", head[26:30])
+            return (w & 0x3FFF, h & 0x3FFF)
+        if chunk == b"VP8L":                      # lossless: 14-bit (size - 1) fields
+            bits = int.from_bytes(head[21:25], "little")
+            return ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+    return None
+
+
+def check_screenshots(out, manifest):
+    """Manifest screenshots exist, match their declared size and meet what
+    Chrome's install dialog accepts (320-3840 px, aspect <= 2.3, wide =
+    landscape, narrow = portrait)."""
+    problems = []
+    for shot in manifest.get("screenshots", []):
+        path = os.path.join(out, shot["src"])
+        if not os.path.isfile(path):
+            problems.append(f"manifest: {shot['src']} does not exist")
+            continue
+        size = image_size(path)
+        declared = tuple(int(x) for x in shot.get("sizes", "0x0").split("x"))
+        if size != declared:
+            problems.append(f"manifest: {shot['src']} is {size}, declared {shot.get('sizes')}")
+            continue
+        w, h = size
+        if not (320 <= min(w, h) and max(w, h) <= 3840 and max(w, h) / min(w, h) <= 2.3):
+            problems.append(f"manifest: {shot['src']} size {w}x{h} is outside what browsers accept")
+        if {"wide": w <= h, "narrow": w >= h}.get(shot.get("form_factor"), False):
+            problems.append(f"manifest: {shot['src']} does not fit form_factor {shot['form_factor']}")
+        if not shot.get("label"):
+            problems.append(f"manifest: {shot['src']} has no label")
+    return problems
 
 
 def safe_out_dir(out, repo):
@@ -166,8 +211,14 @@ def verify(out, assets):
             problems.append(f"build-info: {info[key]} does not exist")
     manifest = json.loads(read(os.path.join(out, "manifest.webmanifest")))
     for icon in manifest.get("icons", []):
-        if not os.path.isfile(os.path.join(out, icon["src"])):
+        path = os.path.join(out, icon["src"])
+        if not os.path.isfile(path):
             problems.append(f"manifest: {icon['src']} does not exist")
+        elif icon.get("sizes", "any") != "any":
+            declared = tuple(int(x) for x in icon["sizes"].split("x"))
+            if image_size(path) != declared:
+                problems.append(f"manifest: {icon['src']} is {image_size(path)}, declared {icon['sizes']}")
+    problems += check_screenshots(out, manifest)
     for a in assets:
         if not os.path.isfile(os.path.join(out, a)):
             problems.append(f"sw.js: precached {a} does not exist")
