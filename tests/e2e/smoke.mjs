@@ -78,6 +78,9 @@ async function desktop(browser) {
     await page.waitForSelector('#dlg-pause[open]', { timeout: 5000 });
     check(true, 'P opens the pause dialog');
     await page.click('#btn-resume');
+    await page.waitForTimeout(1500);
+    const title = await page.title();
+    check(/^Tornada 3D — /.test(title) && !/FPS/.test(title), 'the game leaves the page title alone during a run');
 
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('tornado:runend', { detail: { outcome: 1 } })));
     await page.waitForSelector('#dlg-end[open]', { timeout: 5000 });

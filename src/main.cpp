@@ -2673,16 +2673,20 @@ static void main_loop() {
         resetRun(s.timeAttack);
 #endif
 
-    // -- FPS counter --
+#ifndef PLATFORM_EMSCRIPTEN
+    // -- FPS in the window title (desktop only: on the web it would overwrite
+    //    document.title, and the page has its own FPS meter in Settings) --
     s.fpsFrames++;
     double nowF = glfwGetTime();
     if (nowF - s.fpsTimer >= 1.0) {
         int fps = (int)((double)s.fpsFrames / (nowF - s.fpsTimer));
         s.fpsFrames = 0;
         s.fpsTimer  = nowF;
-        std::string title = "Tornada 3D - FPS: " + std::to_string(fps);
+        std::string title = std::string(g_lang == LANG_EN ? "Tornado 3D" : "Tornada 3D") +
+                            " - FPS: " + std::to_string(fps);
         glfwSetWindowTitle(s.window, title.c_str());
     }
+#endif
 
 #ifndef PLATFORM_EMSCRIPTEN
     glfwSwapBuffers(s.window);
@@ -2715,7 +2719,7 @@ int main() {
 #endif
 
     GLFWwindow* window = glfwCreateWindow(
-        1280, 720, "Tornada 3D - urmareste mouse", nullptr, nullptr);
+        1280, 720, g_lang == LANG_EN ? "Tornado 3D" : "Tornada 3D", nullptr, nullptr);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glfwSetCursorPosCallback(window, cursorPosCallback);
