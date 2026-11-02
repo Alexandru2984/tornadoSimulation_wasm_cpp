@@ -2,6 +2,7 @@
 /build/
 /build-wasm/
 /build-*/
+/dist/
 /CMakeFiles/
 /CMakeCache.txt
 /cmake_install.cmake
@@ -45,12 +46,17 @@
 /assets/models/*.gltf
 /assets/models/*.bin
 
-# Ignore by default, but keep shaders and source
-!shaders/
-!src/
 
 # Leaderboard database + backups + logs (created at runtime)
 /server/scores.db
 /server/backups/
 /server/backup.log
 /server/__pycache__/
+/server/secret.key
+__pycache__/
+*.pyc
+
+# Local tooling
+/node_modules/
+/test-results/
+/.cache/

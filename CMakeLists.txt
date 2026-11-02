@@ -8,6 +8,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ── Compiler warnings ─────────────────────────────────────────────────
 add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
 
+# Build the game itself. OFF builds only the (GLM-only) unit tests, which needs
+# no GLFW/X11/OpenGL headers — handy on headless servers and in quick CI jobs.
+option(TORNADO_BUILD_GAME "Build the tornado game executable" ON)
+
 # ── Detect Emscripten ─────────────────────────────────────────────────
 if("${CMAKE_SYSTEM_NAME}" STREQUAL "Emscripten")
     set(USING_EMSCRIPTEN TRUE)
@@ -16,26 +20,46 @@ else()
 endif()
 
 # ── Dependencies via FetchContent ─────────────────────────────────────
+# Release tarballs pinned by SHA-256: a tampered or re-tagged upstream archive
+# fails the download instead of silently ending up in the build.
 include(FetchContent)
+
+# glad 0.1.x still declares cmake_minimum_required(VERSION 3.0), which CMake 4
+# refuses outright. Let third-party projects configure with 3.5 policies.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
+# Extract with the archive timestamps replaced (silences CMP0135).
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
 
 # GLM is always needed (header-only math library)
 FetchContent_Declare(
     glm
-    GIT_REPOSITORY https://github.com/g-truc/glm.git
-    GIT_TAG        0.9.9.8
+    URL      https://github.com/g-truc/glm/archive/refs/tags/1.0.1.tar.gz
+    URL_HASH SHA256=9f3174561fd26904b23f0db5e560971cbf9b3cbda0b280f04d5c379d03bf234c
 )
+# Header-only use: don't build GLM's own test suite.
+set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLM_ENABLE_CXX_17 ON CACHE BOOL "" FORCE)
 
-if(NOT USING_EMSCRIPTEN)
+if(NOT USING_EMSCRIPTEN AND TORNADO_BUILD_GAME)
     # Native build: fetch GLFW and GLAD
+    set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    # X11 is enough everywhere (Wayland sessions run it through XWayland) and
+    # avoids requiring wayland-scanner + protocol headers just to build.
+    option(GLFW_BUILD_WAYLAND "Build GLFW with Wayland support" OFF)
     FetchContent_Declare(
         glfw
-        GIT_REPOSITORY https://github.com/glfw/glfw.git
-        GIT_TAG        3.3.8
+        URL      https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz
+        URL_HASH SHA256=c038d34200234d071fae9345bc455e4a8f2f544ab60150765d7704e08f3dac01
     )
     FetchContent_Declare(
         glad
-        GIT_REPOSITORY https://github.com/Dav1dde/glad.git
-        GIT_TAG        v0.1.36
+        URL      https://github.com/Dav1dde/glad/archive/refs/tags/v0.1.36.tar.gz
+        URL_HASH SHA256=8470ed1b0e9fbe88e10c34770505c8a1dc8ccb78cadcf673331aaf5224f963d2
     )
     FetchContent_MakeAvailable(glfw glad glm)
     find_package(OpenGL REQUIRED)
@@ -44,9 +68,10 @@ else()
 endif()
 
 # ── Main executable ───────────────────────────────────────────────────
-add_executable(tornado src/main.cpp)
-
-if(USING_EMSCRIPTEN)
+if(NOT TORNADO_BUILD_GAME)
+    # Tests-only configuration (see option above).
+elseif(USING_EMSCRIPTEN)
+    add_executable(tornado src/main.cpp)
     # --- Emscripten / WebGL 2 build ---
     set_target_properties(tornado PROPERTIES SUFFIX ".html")
 
@@ -81,6 +106,7 @@ if(USING_EMSCRIPTEN)
     target_link_libraries(tornado PRIVATE glm::glm)
 else()
     # --- Native / desktop build ---
+    add_executable(tornado src/main.cpp)
     target_include_directories(tornado PRIVATE ${glad_SOURCE_DIR}/include)
     target_compile_definitions(tornado PRIVATE "GLFW_INCLUDE_NONE")
     target_link_libraries(tornado PRIVATE glfw glad OpenGL::GL glm::glm)
