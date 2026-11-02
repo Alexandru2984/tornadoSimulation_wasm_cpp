@@ -1059,5 +1059,47 @@
         }
     });
 
+    // ── Offline play + install ───────────────────────────────────────
+    // Only deployed builds register the worker: in dev it would serve stale
+    // files after every rebuild, so any leftover registration is removed.
+    if ('serviceWorker' in navigator) {
+        if (build.build !== 'dev') {
+            var hadController = !!navigator.serviceWorker.controller;
+            window.addEventListener('load', function () {
+                navigator.serviceWorker.register('sw.js').catch(function () { /* offline mode is optional */ });
+            });
+            navigator.serviceWorker.addEventListener('controllerchange', function () {
+                // A new deploy took over. Never reload mid-run; just say so.
+                if (hadController) toast('Versiune nouă disponibilă — reîncarcă pagina când termini runda.');
+                hadController = true;
+            });
+        } else {
+            navigator.serviceWorker.getRegistrations().then(function (regs) {
+                regs.forEach(function (r) { r.unregister(); });
+            }).catch(function () {});
+        }
+    }
+
+    var installPrompt = null;
+    var btnInstall = $('#btn-install');
+    window.addEventListener('beforeinstallprompt', function (e) {
+        e.preventDefault();              // show our own button instead of the mini-infobar
+        installPrompt = e;
+        btnInstall.hidden = false;
+    });
+    btnInstall.addEventListener('click', function () {
+        if (!installPrompt) return;
+        installPrompt.prompt();
+        installPrompt.userChoice.then(function () {
+            installPrompt = null;
+            btnInstall.hidden = true;
+        });
+    });
+    window.addEventListener('appinstalled', function () {
+        installPrompt = null;
+        btnInstall.hidden = true;
+        toast('Tornada 3D a fost instalată');
+    });
+
     boot();
 })();

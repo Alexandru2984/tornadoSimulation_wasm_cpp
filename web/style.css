@@ -183,6 +183,11 @@ body.in-run .screen-start { display: none; }
     -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
 }
 .card.narrow { max-width: 440px; padding: 24px; text-align: center; }
+.card.narrow h1 { font-size: 1.45rem; margin-bottom: 0.5em; }
+.big-code {
+    margin: 0 0 8px; font-size: clamp(64px, 18vw, 112px); font-weight: 800; line-height: 1; letter-spacing: -2px;
+    background: linear-gradient(180deg, #fff, var(--accent)); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
 
 .start-wrap {
     display: grid; gap: 16px;

@@ -1,0 +1,22 @@
+{
+    "id": "/",
+    "name": "Tornada 3D",
+    "short_name": "Tornada 3D",
+    "description": "Controlează o tornadă și distruge tot ce prinzi într-o lume 3D infinită.",
+    "lang": "ro",
+    "dir": "ltr",
+    "start_url": "/?source=pwa",
+    "scope": "/",
+    "display": "fullscreen",
+    "display_override": ["fullscreen", "standalone"],
+    "orientation": "landscape",
+    "background_color": "#0b1020",
+    "theme_color": "#0b1020",
+    "categories": ["games", "entertainment"],
+    "icons": [
+        { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+        { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+        { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+        { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+    ]
+}

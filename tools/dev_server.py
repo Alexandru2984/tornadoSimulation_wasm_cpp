@@ -38,7 +38,7 @@ HEADERS = {
 
 TYPES = {".wasm": "application/wasm", ".data": "application/octet-stream",
          ".webmanifest": "application/manifest+json", ".js": "text/javascript",
-         ".svg": "image/svg+xml"}
+         ".svg": "image/svg+xml", ".ico": "image/x-icon", ".xml": "application/xml"}
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -48,7 +48,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         for k, v in HEADERS.items():
             self.send_header(k, v)
-        if self.path.split("?")[0].endswith((".html", "/", "sw.js")):
+        if self.path.split("?")[0].endswith((".html", "/", "sw.js", ".webmanifest")):
             self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
@@ -74,6 +74,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def send_error(self, code, message=None, explain=None):
+        # Like nginx's error_page 404 /404.html: real 404 status, friendly page.
+        page = os.path.join(self.directory, "404.html")
+        if code == 404 and self.command in ("GET", "HEAD") and os.path.isfile(page):
+            with open(page, "rb") as f:
+                body = f.read()
+            self.send_response(404)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command == "GET":
+                self.wfile.write(body)
+            return
+        super().send_error(code, message, explain)
 
     def do_GET(self):
         if self.path.startswith("/api/"):
