@@ -92,6 +92,7 @@ and then loads `tornado.js`. C++ ⇄ JS talk through exported functions (`start_
 ```bash
 ctest --test-dir build --output-on-failure      # C++ (math, terrain, constants)
 python3 server/test_leaderboard.py              # leaderboard API (anti-forgery, limits, migration)
+python3 server/test_lbadmin.py                  # moderation CLI
 python3 tools/test_package_site.py              # deploy packaging
 cd tests/e2e && npm ci && npx playwright install chromium && node smoke.mjs ../../dist
 ```
@@ -125,6 +126,25 @@ runs on the player's machine. Treat the leaderboard as a fun ranking, not proof.
 
 Environment: `TORNADO_DB`, `TORNADO_HOST`, `TORNADO_PORT`, `TORNADO_ORIGINS`.
 
+### Moderation
+
+`server/lbadmin.py`, installed with a wrapper as `tornado-lbadmin` (runs as the database owner):
+
+```bash
+tornado-lbadmin top -m classic -d 1       # board with time, points/second, device id
+tornado-lbadmin recent -n 30              # latest submissions
+tornado-lbadmin show 123                  # one score + what else that device sent
+tornado-lbadmin delete 123 124
+tornado-lbadmin ban --score 123 --reason "impossible score"   # name(s) + device, scores removed
+tornado-lbadmin ban --name SomeName --keep-scores
+tornado-lbadmin bans | unban --name X | unban --player HASH
+tornado-lbadmin release SomeName          # free a name whose owner lost the profile code
+```
+
+A ban covers the name, the device (player key) that claimed it and every other name that
+device claimed; banned submissions get `403 banned`. Someone who clears their browser data
+gets a new device key, so bans slow cheaters down rather than stop them for good.
+
 ## Production (VPS)
 
 ```
@@ -138,7 +158,8 @@ Cloudflare → cloudflared (tunnel) → nginx :443 ─┬─ /var/www/tornado.mi
 | `server/nginx/security-headers-tornado.conf` | `/etc/nginx/snippets/` |
 | `server/nginx/tornado-rate-limit.conf` | `/etc/nginx/conf.d/` |
 | `server/tornado-leaderboard.service` | `/etc/systemd/system/` (sandboxed `tornadolb` user) |
-| `server/leaderboard.py` | `/opt/tornado-leaderboard/` (synced by the deploy script) |
+| `server/leaderboard.py`, `server/lbadmin.py` | `/opt/tornado-leaderboard/` (synced by the deploy script) |
+| `server/tornado-lbadmin` | `/usr/local/sbin/` (synced by the deploy script) |
 | `server/backup_scores.sh` | `/usr/local/sbin/tornado-leaderboard-backup` |
 | `server/tornado-leaderboard-backup.{service,timer}` | `/etc/systemd/system/` (daily, 14 days kept) |
 

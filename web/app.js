@@ -585,6 +585,9 @@
             } else if (res.status === 422) {
                 run.submitted = true;
                 setSubmitUi('done', 'Scorul nu a putut fi validat de server.', 'err');
+            } else if (res.status === 403 && err === 'banned') {
+                run.submitted = true;
+                setSubmitUi('done', 'Acest nume sau dispozitiv a fost blocat în clasamentul global.', 'err');
             } else if (res.status === 429) {
                 setSubmitUi('ready', 'Prea multe încercări. Mai așteaptă puțin.', 'err');
             } else if (res.status === 404) {

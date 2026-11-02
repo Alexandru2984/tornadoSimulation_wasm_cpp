@@ -1,0 +1,6 @@
+#!/bin/sh
+# Leaderboard moderation, run as the database owner (see server/lbadmin.py;
+# it uses /var/lib/tornado-leaderboard/scores.db when that exists).
+# Installed as /usr/local/sbin/tornado-lbadmin by deploy_vps.sh.
+#   tornado-lbadmin top | recent | show ID | delete ID.. | ban --name X | bans | ...
+exec sudo -u tornadolb /usr/bin/python3 -B /opt/tornado-leaderboard/lbadmin.py "$@"

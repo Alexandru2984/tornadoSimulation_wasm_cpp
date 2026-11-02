@@ -228,6 +228,8 @@ class Api(unittest.TestCase):
     def test_health_and_head(self):
         self.assertEqual(self.req("GET", "/api/v2/health")[0], 200)
         self.assertEqual(self.req("HEAD", "/api/v2/health")[0], 200)
+        self.assertEqual(self.req("GET", "/api/nope")[0], 404)
+        self.assertEqual(self.req("DELETE", "/api/v2/scores")[0], 405)
 
     def test_health_fails_when_storage_is_unusable(self):
         good = lb.DB_PATH
@@ -237,8 +239,35 @@ class Api(unittest.TestCase):
         finally:
             lb.DB_PATH = good
         self.assertEqual((status, body), (503, {"error": "storage busy"}))
-        self.assertEqual(self.req("GET", "/api/nope")[0], 404)
-        self.assertEqual(self.req("DELETE", "/api/v2/scores")[0], 405)
+
+    def test_banned_device_and_name(self):
+        import hashlib
+        import sqlite3
+        other = "z" * 40
+        c = sqlite3.connect(lb.DB_PATH)
+        c.executemany("INSERT INTO bans (kind, value, created) VALUES (?, ?, 0)",
+                      [("player", hashlib.sha256(other.encode()).hexdigest()), ("name", "badguy")])
+        c.commit()
+        c.close()
+        try:
+            run = self.start_run()
+            self.now += 150
+            # banned device: refused even anonymously
+            self.assertEqual(self.submit(run, name="ANONIM", player=other)[:2], (403, {"error": "banned"}))
+            # banned name: refused for any device
+            self.assertEqual(self.submit(run, name="BadGuy")[:2], (403, {"error": "banned"}))
+            # the run was not burned by the refusals
+            code, body, _ = self.submit(run, name="Clean")
+            self.assertEqual(code, 200, body)
+            c = sqlite3.connect(lb.DB_PATH)
+            h = c.execute("SELECT player_hash FROM scores WHERE name = 'Clean'").fetchone()[0]
+            c.close()
+            self.assertEqual(h, hashlib.sha256(PLAYER.encode()).hexdigest())
+        finally:
+            c = sqlite3.connect(lb.DB_PATH)
+            c.execute("DELETE FROM bans")
+            c.commit()
+            c.close()
 
     def test_full_flow_and_replay(self):
         run = self.start_run(difficulty=2)

@@ -38,10 +38,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Leaderboard API tests
         run: python server/test_leaderboard.py
+      - name: Moderation CLI tests
+        run: python server/test_lbadmin.py
       - name: Site packaging tests
         run: python tools/test_package_site.py
       - name: Byte-compile tools
-        run: python -m py_compile tools/dev_server.py tools/package_site.py server/leaderboard.py
+        run: python -m py_compile tools/dev_server.py tools/package_site.py server/leaderboard.py server/lbadmin.py
 
   lint:
     name: Lint (shell, JS, JSON)
@@ -51,7 +53,7 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck deploy_vps.sh build_wasm.sh server/backup_scores.sh
+        run: shellcheck deploy_vps.sh build_wasm.sh server/backup_scores.sh server/tornado-lbadmin
       - name: JavaScript syntax
         run: for f in web/*.js tests/e2e/*.mjs; do node --check "$f"; done
       - name: JSON files

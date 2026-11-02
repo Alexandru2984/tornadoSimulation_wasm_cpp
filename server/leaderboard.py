@@ -16,6 +16,8 @@ API v2
                         -> {"ok": true, "rank": n}
   GET  /api/v2/stats    -> global destruction counters
 
+Moderation: server/lbadmin.py (list, delete, ban names or devices).
+
 Legacy (pre-v2 pages still cached in browsers)
   GET  /api/scores      -> classic/normal top 10 in the old array format
   POST /api/scores      -> 410 Gone
@@ -233,6 +235,9 @@ SCORE_COLUMNS = {
     "max_combo": "INTEGER NOT NULL DEFAULT 0",
     "run_time": "INTEGER NOT NULL DEFAULT 0",
     "created_ts": "INTEGER NOT NULL DEFAULT 0",
+    # SHA-256 of the submitting device's player key ('' for old rows): lets
+    # a moderator ban the device behind a score, even an anonymous one.
+    "player_hash": "TEXT NOT NULL DEFAULT ''",
 }
 
 
@@ -280,6 +285,16 @@ def init_db():
                    key_hash  TEXT NOT NULL,
                    created   INTEGER NOT NULL
                ) WITHOUT ROWID""")
+        # Moderation (server/lbadmin.py): banned names and player keys.
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS bans (
+                   kind    TEXT    NOT NULL CHECK (kind IN ('name', 'player')),
+                   value   TEXT    NOT NULL,
+                   reason  TEXT    NOT NULL DEFAULT '',
+                   created INTEGER NOT NULL,
+                   PRIMARY KEY (kind, value)
+               ) WITHOUT ROWID""")
+        conn.execute("CREATE INDEX IF NOT EXISTS scores_player ON scores (player_hash)")
     finally:
         conn.close()
 
@@ -551,8 +566,10 @@ class Handler(BaseHTTPRequestHandler):
         if not name_is_allowed(name):
             raise ApiError(422, "name not allowed")
         player = data.get("player")
-        if name != ANON and (not isinstance(player, str) or not PLAYER_RE.match(player)):
+        has_key = isinstance(player, str) and bool(PLAYER_RE.match(player))
+        if name != ANON and not has_key:
             raise ApiError(400, "player key required")
+        key_hash = hashlib.sha256(player.encode()).hexdigest() if has_key else ""
 
         now = CLOCK()
         conn = connect()
@@ -568,6 +585,12 @@ class Handler(BaseHTTPRequestHandler):
                 if r[3]:
                     raise ApiError(409, "run already submitted")
                 run = {"mode": r[0], "difficulty": r[1], "started": r[2]}
+                banned = conn.execute(
+                    "SELECT 1 FROM bans WHERE (kind = 'player' AND value = ?)"
+                    " OR (kind = 'name' AND value = ?)",
+                    (key_hash or "-", name.lower() if name != ANON else "-")).fetchone()
+                if banned:
+                    raise ApiError(403, "banned")
                 row, err = check_submission(run, data, now)
                 if err:
                     # Burn the run: no retrying with tweaked numbers.
@@ -576,7 +599,6 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(422, err)
 
                 if name != ANON:
-                    key_hash = hashlib.sha256(player.encode()).hexdigest()
                     owner = conn.execute("SELECT key_hash FROM players WHERE name_key = ?",
                                          (name.lower(),)).fetchone()
                     if owner is None:
@@ -588,12 +610,13 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute("UPDATE runs SET used = 1 WHERE id = ?", (run_id,))
                 conn.execute(
                     """INSERT INTO scores (name, score, wave, mode, difficulty, houses, trees,
-                           props, animals, vehicles, birds, max_combo, run_time, created_ts)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           props, animals, vehicles, birds, max_combo, run_time, created_ts,
+                           player_hash)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (name, row["score"], row["wave"], run["mode"], run["difficulty"],
                      row["houses"], row["trees"], row["props"], row["animals"],
                      row["vehicles"], row["birds"], row["max_combo"], row["run_time"],
-                     int(now)))
+                     int(now), key_hash))
                 rank = conn.execute(
                     "SELECT COUNT(*) + 1 FROM scores WHERE mode = ? AND difficulty = ?"
                     " AND score > ?", (run["mode"], run["difficulty"], row["score"])).fetchone()[0]

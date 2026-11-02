@@ -113,6 +113,9 @@ sync_leaderboard() {
     local unit; unit="$(detect_lb_unit)"
     [ -n "$unit" ] || die "no leaderboard unit found (set LB_UNIT or SKIP_LB=1)"
     [ -d "$(dirname "$LB_DST")" ] || die "$(dirname "$LB_DST") missing — install the service first (see README)"
+    # Moderation tool + wrapper: no restart needed, just keep them current.
+    sudo install -o root -g root -m 0644 server/lbadmin.py "$(dirname "$LB_DST")/lbadmin.py"
+    sudo install -o root -g root -m 0755 server/tornado-lbadmin /usr/local/sbin/tornado-lbadmin
     if sudo cmp -s server/leaderboard.py "$LB_DST"; then
         ok "leaderboard: unchanged ($unit)"
         return
@@ -195,7 +198,7 @@ cmd_deploy() {
     log "running tests"
     ctest --test-dir "$BUILD_DIR" --output-on-failure
     local t
-    for t in server/test_leaderboard.py tools/test_package_site.py; do
+    for t in server/test_leaderboard.py server/test_lbadmin.py tools/test_package_site.py; do
         python3 "$t" >/dev/null 2>&1 || python3 "$t" || die "$t failed"
     done
     ok "tests passed"
