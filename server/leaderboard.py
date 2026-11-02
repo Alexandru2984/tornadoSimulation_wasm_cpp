@@ -284,6 +284,21 @@ def init_db():
         conn.close()
 
 
+def hold_wal_files():
+    """Open one idle connection and keep it for the life of the process.
+
+    In WAL mode SQLite deletes scores.db-wal/-shm when the last connection
+    closes, and whoever opens the database next creates them again, owned
+    by that user. If that is the root-run backup, this service (a different
+    user) can no longer open its own database ("unable to open database
+    file"). While this connection is open the files always exist and belong
+    to the service; the backup only ever reads them.
+    """
+    conn = connect()
+    conn.execute("SELECT count(*) FROM sqlite_master").fetchall()   # maps -wal/-shm
+    return conn
+
+
 def maintenance(now=None):
     """Drop expired runs and prune scores that can never be shown again."""
     now = CLOCK() if now is None else now
@@ -457,6 +472,13 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- endpoints --
     def get_health(self):
+        # Touch the database: "process up but storage unusable" must fail the
+        # deploy smoke test, not pass it.
+        conn = connect()
+        try:
+            conn.execute("SELECT 1 FROM scores LIMIT 1").fetchall()
+        finally:
+            conn.close()
         self._send(200, {"ok": True})
 
     def _read_limit(self):
@@ -596,11 +618,15 @@ class Server(ThreadingHTTPServer):
 
 def main():
     init_db()
+    wal_keeper = hold_wal_files()
     maintenance()
     threading.Thread(target=maintenance_loop, daemon=True).start()
     srv = Server((HOST, PORT), Handler)
     print(f"Tornado leaderboard listening on {HOST}:{PORT}", flush=True)
-    srv.serve_forever()
+    try:
+        srv.serve_forever()
+    finally:
+        wal_keeper.close()
 
 
 if __name__ == "__main__":

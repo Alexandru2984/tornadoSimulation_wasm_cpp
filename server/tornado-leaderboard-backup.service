@@ -27,4 +27,7 @@ RestrictRealtime=yes
 LockPersonality=yes
 CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
 AmbientCapabilities=
-ReadWritePaths=/srv/backups/tornado-leaderboard /var/lib/tornado-leaderboard
+ReadWritePaths=/srv/backups/tornado-leaderboard
+# Read-only on purpose: the backup must never create the database's WAL
+# files (they would belong to root and lock the service out).
+ReadOnlyPaths=/var/lib/tornado-leaderboard

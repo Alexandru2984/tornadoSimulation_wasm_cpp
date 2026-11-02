@@ -26,6 +26,23 @@ case "$DB$BACKUP_DIR" in *"'"*) echo "paths must not contain quotes" >&2; exit 1
 [ -d "$BACKUP_DIR" ] || { echo "backup directory $BACKUP_DIR does not exist" >&2; exit 1; }
 [[ "$KEEP_DAYS" =~ ^[0-9]+$ ]] || { echo "KEEP_DAYS must be a number" >&2; exit 1; }
 
+# WAL mode: SQLite creates scores.db-wal/-shm for whoever opens the database
+# while they are missing. If that were this script (root), the service user
+# could no longer open its own database. The service keeps them open while
+# it runs, so wait for them briefly (e.g. during a restart) and otherwise
+# refuse rather than create them under the wrong owner.
+if [ "$(od -An -tu1 -j18 -N1 "$DB" | tr -d ' ')" = 2 ] && [ "$(stat -c %u "$DB")" != "$(id -u)" ]; then
+    for _ in $(seq 1 30); do
+        [ -e "$DB-shm" ] && [ -e "$DB-wal" ] && break
+        sleep 1
+    done
+    if [ ! -e "$DB-shm" ] || [ ! -e "$DB-wal" ]; then
+        echo "$DB is in WAL mode but its -wal/-shm files are missing (service not running?);" \
+             "not creating them as $(id -un)" >&2
+        exit 1
+    fi
+fi
+
 stamp="$(date -u +'%Y-%m-%dT%H%M%SZ')"
 db_tmp="${BACKUP_DIR}/.scores-${stamp}.sqlite.tmp"
 gz_tmp="${BACKUP_DIR}/.scores-${stamp}.sqlite.gz.tmp"

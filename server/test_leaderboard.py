@@ -228,6 +228,15 @@ class Api(unittest.TestCase):
     def test_health_and_head(self):
         self.assertEqual(self.req("GET", "/api/v2/health")[0], 200)
         self.assertEqual(self.req("HEAD", "/api/v2/health")[0], 200)
+
+    def test_health_fails_when_storage_is_unusable(self):
+        good = lb.DB_PATH
+        lb.DB_PATH = Path(self.tmp.name) / "missing-dir" / "scores.db"
+        try:
+            status, body, _ = self.req("GET", "/api/v2/health")
+        finally:
+            lb.DB_PATH = good
+        self.assertEqual((status, body), (503, {"error": "storage busy"}))
         self.assertEqual(self.req("GET", "/api/nope")[0], 404)
         self.assertEqual(self.req("DELETE", "/api/v2/scores")[0], 405)
 
@@ -409,6 +418,30 @@ class Migration(unittest.TestCase):
                 lb.DB_PATH = old
             self.assertEqual(rows[0]["score"], 47318)
             self.assertEqual(rows[0]["date"], "2026-07-07")
+
+
+class WalFiles(unittest.TestCase):
+    def test_wal_files_survive_other_connections(self):
+        # The root-run backup must never be the one that creates -wal/-shm.
+        with tempfile.TemporaryDirectory() as d:
+            old = lb.DB_PATH
+            lb.DB_PATH = Path(d) / "scores.db"
+            try:
+                lb.init_db()
+                keeper = lb.hold_wal_files()
+                try:
+                    for _ in range(3):
+                        c = lb.connect()
+                        c.execute("INSERT INTO runs (id, mode, difficulty, started) VALUES (hex(randomblob(8)), 'classic', 1, 0)")
+                        c.close()
+                    lb.maintenance(now=10**10)
+                    for suffix in ("-wal", "-shm"):
+                        self.assertTrue(Path(str(lb.DB_PATH) + suffix).exists(), suffix)
+                finally:
+                    keeper.close()
+                self.assertFalse(Path(str(lb.DB_PATH) + "-wal").exists())   # clean close removes them
+            finally:
+                lb.DB_PATH = old
 
 
 if __name__ == "__main__":
