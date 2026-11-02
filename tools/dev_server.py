@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Local dev server: static files + /api/ proxy, with production headers.
 
-Serves a build directory the way nginx does in production — same
-Content-Security-Policy and security headers — so a CSP violation or a
-missing MIME type shows up locally instead of after a deploy. Requests to
-/api/ are forwarded to the leaderboard service.
+Serves a build directory the way nginx does in production: the security
+headers (CSP included) are read from server/nginx/security-headers-tornado.conf,
+missing paths get 404.html with a 404 status, and /api/ is forwarded to the
+leaderboard service. A CSP violation or a wrong MIME type therefore shows
+up locally instead of after a deploy.
 
-    python3 server/leaderboard.py                      # terminal 1 (API on :8791)
-    TORNADO_ORIGINS=http://localhost:8080 python3 server/leaderboard.py   # (allow the dev origin)
-    python3 tools/dev_server.py build-wasm             # terminal 2 -> http://localhost:8080
+    TORNADO_ORIGINS=http://localhost:8080 python3 server/leaderboard.py   # terminal 1 (API on :8791)
+    python3 tools/dev_server.py build-wasm     # terminal 2 -> http://localhost:8080
+    python3 tools/dev_server.py dist           # the packaged site (service worker active)
 
 Options: --port 8080  --api http://127.0.0.1:8791
 """
@@ -16,25 +17,36 @@ import argparse
 import http.client
 import http.server
 import os
+import re
+import secrets
 import sys
 from functools import partial
 from urllib.parse import urlsplit
 
-# Keep in sync with server/nginx/security-headers-tornado.conf
-CSP = ("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; "
-       "img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; "
-       "worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; "
-       "form-action 'none'; frame-ancestors 'none'")
+HERE = os.path.dirname(os.path.abspath(__file__))
+SNIPPET = os.path.join(HERE, "..", "server", "nginx", "security-headers-tornado.conf")
 
-HEADERS = {
-    "Content-Security-Policy": CSP,
-    "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "DENY",
-    "Referrer-Policy": "strict-origin-when-cross-origin",
-    "Cross-Origin-Opener-Policy": "same-origin",
-    "Cross-Origin-Resource-Policy": "same-origin",
-    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
-}
+
+def load_headers(path=SNIPPET):
+    """The production security headers, read from the nginx snippet itself.
+
+    Only what cannot work on plain-HTTP localhost is dropped (HSTS and
+    upgrade-insecure-requests); $request_id becomes a per-request nonce.
+    """
+    headers = {}
+    with open(path, encoding="utf-8") as f:
+        for name, value in re.findall(r'^add_header\s+(\S+)\s+"([^"]*)"', f.read(), re.M):
+            if name.lower() == "strict-transport-security":
+                continue
+            if name.lower() == "content-security-policy":
+                value = re.sub(r";\s*upgrade-insecure-requests", "", value)
+            headers[name] = value
+    if "Content-Security-Policy" not in headers:
+        raise SystemExit(f"no CSP found in {path}")
+    return headers
+
+
+HEADERS = load_headers()
 
 TYPES = {".wasm": "application/wasm", ".data": "application/octet-stream",
          ".webmanifest": "application/manifest+json", ".js": "text/javascript",
@@ -46,8 +58,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, **TYPES}
 
     def end_headers(self):
+        nonce = secrets.token_hex(16)
         for k, v in HEADERS.items():
-            self.send_header(k, v)
+            self.send_header(k, v.replace("$request_id", nonce))
         if self.path.split("?")[0].endswith((".html", "/", "sw.js", ".webmanifest")):
             self.send_header("Cache-Control", "no-cache")
         super().end_headers()
