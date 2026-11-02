@@ -1,0 +1,30 @@
+# Install: /etc/systemd/system/ (+ server/backup_scores.sh as /usr/local/sbin/tornado-leaderboard-backup)
+[Unit]
+Description=Backup Tornado leaderboard SQLite database
+After=tornado-leaderboard.service
+Requires=tornado-leaderboard.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/tornado-leaderboard-backup
+TimeoutStartSec=180
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+ReadWritePaths=/srv/backups/tornado-leaderboard /var/lib/tornado-leaderboard

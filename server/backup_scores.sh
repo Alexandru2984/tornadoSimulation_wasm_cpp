@@ -1,52 +1,50 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# Back up the Tornado 3D leaderboard database.
+# Back up the Tornado 3D leaderboard database (safe while the API writes).
 #
-# Uses SQLite's online ".backup" so it is safe while the service writes.
-# Keeps the newest KEEP backups and prunes the rest.
+#   1. SQLite online .backup (consistent snapshot, WAL included)
+#   2. integrity check of the snapshot
+#   3. gzip, then decompress the archive again and re-check it
+#   4. atomic rename into place + .sha256 next to it
+#   5. delete archives older than KEEP_DAYS
 #
-# Wire it up with cron or a systemd timer, e.g. every 6 hours:
-#   0 */6 * * * /path/to/server/backup_scores.sh >> /var/log/tornado-backup.log 2>&1
-# Must run as a user that can read the DB (root or the tornadolb user).
+# Production: installed as /usr/local/sbin/tornado-leaderboard-backup and run
+# daily by tornado-leaderboard-backup.timer (units in this directory).
+# Restore:  gzip -cd scores-<stamp>.sqlite.gz > scores.db   (service stopped)
+#
+# Environment: TORNADO_DB, BACKUP_DIR, KEEP_DAYS (defaults below).
 # ─────────────────────────────────────────────────────────────────────
-set -euo pipefail
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Production DB lives in /var/lib (owned by the tornadolb service user, group-
-# readable). Falls back to the dev copy next to this script.
-DB="${TORNADO_DB:-/var/lib/tornado-leaderboard/scores.db}"
-[ -f "$DB" ] || DB="$DIR/scores.db"
-BACKUP_DIR="${BACKUP_DIR:-$DIR/backups}"
-KEEP="${KEEP:-14}"
-
-if [ ! -f "$DB" ]; then
-    echo "[$(date -Is)] no database at $DB, nothing to back up"
-    exit 0
-fi
-
+set -Eeuo pipefail
 umask 077
-mkdir -p "$BACKUP_DIR"
-STAMP="$(date +%Y%m%d-%H%M%S)"
-OUT="$BACKUP_DIR/scores-$STAMP.db"
 
-case "$OUT" in *"'"*) echo "backup path must not contain quotes" >&2; exit 1 ;; esac
+DB="${TORNADO_DB:-/var/lib/tornado-leaderboard/scores.db}"
+BACKUP_DIR="${BACKUP_DIR:-/srv/backups/tornado-leaderboard}"
+KEEP_DAYS="${KEEP_DAYS:-14}"
 
-# Online backup (consistent even while the API is writing, WAL included),
-# then verify the copy before trusting it.
-sqlite3 -readonly "$DB" ".timeout 10000" ".backup '$OUT'"
-if [ "$(sqlite3 "$OUT" 'PRAGMA quick_check;')" != "ok" ]; then
-    echo "[$(date -Is)] integrity check FAILED for $OUT" >&2
-    rm -f "$OUT"
-    exit 1
-fi
-chmod 600 "$OUT"
-echo "[$(date -Is)] backed up -> $OUT ($(stat -c%s "$OUT") bytes)"
+case "$DB$BACKUP_DIR" in *"'"*) echo "paths must not contain quotes" >&2; exit 1 ;; esac
+[ -f "$DB" ] || { echo "no database at $DB" >&2; exit 1; }
+[ -d "$BACKUP_DIR" ] || { echo "backup directory $BACKUP_DIR does not exist" >&2; exit 1; }
+[[ "$KEEP_DAYS" =~ ^[0-9]+$ ]] || { echo "KEEP_DAYS must be a number" >&2; exit 1; }
 
-# Prune: keep only the newest $KEEP backups
-find "$BACKUP_DIR" -maxdepth 1 -name 'scores-*.db' -printf '%T@ %p\n' \
-    | sort -rn | tail -n +"$((KEEP + 1))" | cut -d' ' -f2- \
-    | while IFS= read -r f; do
-        rm -f -- "$f" && echo "[$(date -Is)] pruned $f"
-    done
+stamp="$(date -u +'%Y-%m-%dT%H%M%SZ')"
+db_tmp="${BACKUP_DIR}/.scores-${stamp}.sqlite.tmp"
+gz_tmp="${BACKUP_DIR}/.scores-${stamp}.sqlite.gz.tmp"
+verify="${BACKUP_DIR}/.scores-${stamp}.verify.sqlite"
+final="${BACKUP_DIR}/scores-${stamp}.sqlite.gz"
 
-exit 0
+cleanup() { rm -f "$db_tmp" "$gz_tmp" "$verify"; }
+trap cleanup EXIT
+
+sqlite3 -readonly "$DB" ".timeout 10000" ".backup '${db_tmp}'"
+[ "$(sqlite3 "$db_tmp" 'pragma quick_check;')" = ok ] || { echo "snapshot failed integrity check" >&2; exit 1; }
+gzip -n -9 -c "$db_tmp" > "$gz_tmp"
+gzip -t "$gz_tmp"
+gzip -cd "$gz_tmp" > "$verify"
+[ "$(sqlite3 "$verify" 'pragma quick_check;')" = ok ] || { echo "archive failed integrity check" >&2; exit 1; }
+mv "$gz_tmp" "$final"
+( cd "$BACKUP_DIR" && sha256sum "$(basename "$final")" > "$(basename "$final").sha256" )
+echo "backed up $DB -> $final ($(stat -c%s "$final") bytes)"
+
+find "$BACKUP_DIR" -xdev -maxdepth 1 -type f \
+    \( -name 'scores-*.sqlite.gz' -o -name 'scores-*.sqlite.gz.sha256' \) \
+    -mtime +"$KEEP_DAYS" -print -delete

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Tornado leaderboard backup
+
+[Timer]
+OnCalendar=*-*-* 04:20:00 UTC
+Persistent=true
+RandomizedDelaySec=5m
+Unit=tornado-leaderboard-backup.service
+
+[Install]
+WantedBy=timers.target
