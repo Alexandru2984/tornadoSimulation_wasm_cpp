@@ -7,7 +7,7 @@ Copies web/ plus the Emscripten output into --out and gives every file that
 nginx serves as "immutable" a content hash in its name (tornado.<hash>.wasm,
 app.<hash>.js, ...). Then it rewrites the references:
 
-  index.html  stylesheet, app.js, preload links, the build-info JSON block
+  index.html  stylesheet, i18n.js, app.js, preload links, the build-info JSON block
   404.html    stylesheet
   sw.js       VERSION and the precache ASSETS list
   sitemap.xml <lastmod>
@@ -26,7 +26,8 @@ import shutil
 import sys
 
 ENGINE = ("tornado.js", "tornado.wasm", "tornado.data")   # from the build dir
-HASHED = ENGINE + ("app.js", "style.css")                 # long-cached by nginx
+PAGE_ASSETS = ("i18n.js", "app.js", "style.css")         # from web/
+HASHED = ENGINE + PAGE_ASSETS                             # long-cached by nginx
 # Precached by the service worker besides the hashed files (the page itself
 # is always cached by sw.js).
 PRECACHE_EXTRA = ("manifest.webmanifest", "favicon.svg", "icons/icon-192.png")
@@ -110,7 +111,8 @@ def package(build, web, out, version, repo, today=None):
     p = os.path.join(out, "index.html")
     html = read(p)
     html = replace_once(html, 'href="style.css"', f'href="{names["style.css"]}"', "index.html")
-    html = replace_once(html, 'src="app.js"', f'src="{names["app.js"]}"', "index.html")
+    for name in ("i18n.js", "app.js"):
+        html = replace_once(html, f'src="{name}"', f'src="{names[name]}"', "index.html")
     for name in ENGINE:
         html = replace_once(html, f'<link rel="preload" href="{name}"',
                             f'<link rel="preload" href="{names[name]}"', "index.html")
@@ -169,7 +171,7 @@ def verify(out, assets):
     for a in assets:
         if not os.path.isfile(os.path.join(out, a)):
             problems.append(f"sw.js: precached {a} does not exist")
-    for leftover in ENGINE + ("app.js", "style.css"):
+    for leftover in HASHED:
         if os.path.exists(os.path.join(out, leftover)):
             problems.append(f"unhashed {leftover} left behind")
     if problems:

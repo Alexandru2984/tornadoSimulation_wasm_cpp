@@ -14,6 +14,9 @@
 
 #include "constants.h"
 #include "terrain_noise.h"
+#include "i18n.h"
+#include "font5x7.h"
+#include <cctype>
 
 static const float EPS = 1e-5f;
 
@@ -261,6 +264,60 @@ TEST(combo_multiplier_caps) {
     ASSERT_APPROX(mult(0), 1.0f);
     ASSERT_APPROX(mult(3), 2.0f);
     ASSERT_APPROX(mult(1000), COMBO_MAX_MULT);
+}
+
+// ── HUD translations (i18n.h) ────────────────────────────────────────
+// Conversion specifiers of a printf format, e.g. "%d:%02d x%.1f" -> "d02d.1f".
+static std::string printfSpecs(const char* fmt) {
+    std::string out;
+    for (const char* p = fmt; *p; ++p) {
+        if (*p != '%') continue;
+        if (*++p == '%') continue;
+        while (*p && !std::isalpha((unsigned char)*p)) out += *p++;
+        if (*p) out += *p;
+        out += ' ';
+    }
+    return out;
+}
+
+TEST(hud_translations_share_format_arguments) {
+    for (int i = 0; i < S_COUNT; ++i) {
+        ASSERT_TRUE(HUD_TEXT[i][0] && HUD_TEXT[i][1] && HUD_TEXT[i][0][0] && HUD_TEXT[i][1][0]);
+        ASSERT_TRUE(printfSpecs(HUD_TEXT[i][0]) == printfSpecs(HUD_TEXT[i][1]));
+    }
+    ASSERT_TRUE(printfSpecs("TIME %d:%02d  EF%d x%.1f") == "d 02d d .1f ");
+}
+
+static bool hasGlyph(char c) {
+    for (const GlyphDef& g : FONT_GLYPHS)
+        if (g.ch == c) return true;
+    return false;
+}
+
+// Every character the HUD can print has a glyph in font5x7.h (a missing one
+// renders as a gap): the literal text of both languages, plus the digits,
+// '.' and '-' that the %d/%f conversions produce.
+TEST(hud_text_has_glyphs_in_the_bitmap_font) {
+    for (int i = 0; i < S_COUNT; ++i)
+        for (int l = 0; l < 2; ++l)
+            for (const char* p = HUD_TEXT[i][l]; *p; ++p) {
+                if (*p == '%' && p[1] != '%') {          // skip the conversion spec
+                    while (*p && !std::isalpha((unsigned char)*p)) ++p;
+                    while (*p && std::isalpha((unsigned char)*p) && *p != 'd' && *p != 'f' && *p != 's') ++p;
+                    if (!*p) break;
+                    continue;
+                }
+                ASSERT_TRUE((unsigned char)*p >= 32 && (unsigned char)*p < 127);
+                ASSERT_TRUE(hasGlyph(*p));
+            }
+    for (const char* p = "0123456789.-"; *p; ++p) ASSERT_TRUE(hasGlyph(*p));
+}
+
+TEST(hud_language_switch) {
+    g_lang = LANG_EN;
+    ASSERT_TRUE(std::string(tr(S_VICTORY)) == "VICTORY");
+    g_lang = LANG_RO;
+    ASSERT_TRUE(std::string(tr(S_VICTORY)) == "VICTORIE");
 }
 
 int main() {

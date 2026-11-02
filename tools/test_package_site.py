@@ -45,7 +45,7 @@ class PackageSiteTest(unittest.TestCase):
     def test_hashed_names_and_references(self):
         names = self.run_package()
         for src, dst in names.items():
-            self.assertRegex(dst, r"^[a-z]+\.[0-9a-f]{10}\.[a-z]+$")
+            self.assertRegex(dst, r"^[a-z0-9]+\.[0-9a-f]{10}\.[a-z]+$")
             self.assertTrue(os.path.isfile(os.path.join(self.out, dst)), dst)
             self.assertFalse(os.path.exists(os.path.join(self.out, src)), src)
         html = self.read("index.html")
@@ -54,6 +54,8 @@ class PackageSiteTest(unittest.TestCase):
                                 "wasm": names["tornado.wasm"], "data": names["tornado.data"]})
         self.assertIn(f'href="{names["style.css"]}"', html)
         self.assertIn(f'src="{names["app.js"]}"', html)
+        self.assertIn(f'src="{names["i18n.js"]}"', html)
+        self.assertLess(html.index(names["i18n.js"]), html.index(names["app.js"]), "dictionary loads first")
         for n in ps.ENGINE:
             self.assertIn(f'<link rel="preload" href="{names[n]}"', html)
         self.assertIn(f'href="/{names["style.css"]}"', self.read("404.html"))

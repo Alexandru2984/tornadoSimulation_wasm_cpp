@@ -54,7 +54,7 @@
         "url": "https://tornado.micutu.com/",
         "image": "https://tornado.micutu.com/og-image.jpg",
         "description": "Controlează o tornadă și distruge case, mașini, copaci și animale într-o lume 3D infinită. 10 valuri, Time Attack, power-up-uri și clasament global.",
-        "inLanguage": "ro",
+        "inLanguage": ["ro", "en"],
         "genre": ["Arcade", "Acțiune", "Simulare"],
         "gamePlatform": ["Web browser", "Desktop", "Mobile"],
         "applicationCategory": "GameApplication",
@@ -187,6 +187,7 @@
                 <li>Clasament global pe moduri, dificultate și perioadă (azi, săptămâna aceasta, luna aceasta, tot timpul).</li>
                 <li>Se poate instala ca aplicație și se joacă și offline.</li>
                 <li>Accesibil: mod cu mișcare redusă (fără tremurul camerei, fulgere atenuate), suport pentru tastatură și gamepad.</li>
+                <li>Disponibil în română și engleză.</li>
             </ul>
 
             <h2>Întrebări frecvente</h2>
@@ -209,6 +210,7 @@
 
             <footer class="about-footer">
                 <span>Cod sursă pe <a href="https://github.com/Alexandru2984/tornadoSimulation_wasm_cpp" rel="noopener">GitHub</a></span>
+                <button class="link-btn" id="btn-lang" type="button" lang="en">English</button>
                 <span class="build" id="build-label"></span>
             </footer>
         </article>
@@ -331,6 +333,14 @@
     </div>
     <div class="settings">
         <div class="setting">
+            <div class="field-label" id="lang-label">Limbă</div>
+            <div class="segmented small" role="radiogroup" aria-labelledby="lang-label" data-setting="lang">
+                <button type="button" role="radio" data-value="auto">Auto</button>
+                <button type="button" role="radio" data-value="ro" lang="ro">Română</button>
+                <button type="button" role="radio" data-value="en" lang="en">English</button>
+            </div>
+        </div>
+        <div class="setting">
             <div class="field-label" id="q-label">Calitate grafică</div>
             <div class="segmented small" role="radiogroup" aria-labelledby="q-label" data-setting="quality">
                 <button type="button" role="radio" data-value="auto">Auto</button>
@@ -410,6 +420,7 @@
 
 <!-- Asset names; deploy_vps.sh rewrites this block with content-hashed names -->
 <script id="build-info" type="application/json">{"build":"dev","js":"tornado.js","wasm":"tornado.wasm","data":"tornado.data"}</script>
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -5,6 +5,8 @@
  * local history and the global leaderboard (/api/v2, see server/).
  *
  * No inline scripts or styles anywhere, so the CSP needs no 'unsafe-inline'.
+ * User-facing strings are written in Romanian and go through t(), which
+ * looks up the English text in i18n.js when the page is in English.
  */
 (function () {
     'use strict';
@@ -22,7 +24,7 @@
     var DIFF_LABELS = ['Ușor', 'Normal', 'Greu'];
     var API = '/api/v2';
     var NAME_RE = /^[A-Za-z0-9 _.\-]{1,16}$/;
-    var NUM = new Intl.NumberFormat('ro-RO');
+    var NUM = new Intl.NumberFormat('ro-RO');      // replaced by applyLanguage()
 
     var IS_TOUCH = (window.matchMedia && matchMedia('(pointer: coarse)').matches) ||
                    navigator.maxTouchPoints > 0;
@@ -78,7 +80,7 @@
     // ── Settings ──────────────────────────────────────────────────────
     var defaults = {
         quality: 'auto', volume: 0.8, muted: false, haptics: true,
-        reducedMotion: PREFERS_REDUCED, fps: false, difficulty: 1
+        reducedMotion: PREFERS_REDUCED, fps: false, difficulty: 1, lang: 'auto'
     };
     var settings = (function () {
         var s = store.get(KEYS.settings, {}) || {};
@@ -86,10 +88,86 @@
         Object.keys(defaults).forEach(function (k) { out[k] = (k in s) ? s[k] : defaults[k]; });
         if (out.quality !== 'auto' && [0, 1, 2].indexOf(out.quality) < 0) out.quality = 'auto';
         if ([0, 1, 2].indexOf(out.difficulty) < 0) out.difficulty = 1;
+        if (['auto', 'ro', 'en'].indexOf(out.lang) < 0) out.lang = 'auto';
         out.volume = clamp(+out.volume || 0, 0, 1);
         return out;
     })();
     function saveSettings() { store.set(KEYS.settings, settings); }
+
+    // ── Language ──────────────────────────────────────────────────────
+    // Romanian is the page's own language (HTML, title, search engines);
+    // English comes from the dictionary in i18n.js, keyed by the Romanian
+    // text. The static page is translated in place (text nodes plus a few
+    // attributes, originals kept for switching back); everything this file
+    // builds goes through t(). The game's HUD gets set_language().
+    var EN = window.TORNADO_EN || {};
+    var lang = 'ro';
+    var pageTranslated = false;
+    var PAGE_TITLE = document.title;
+    // Elements whose text this file writes itself: the page walker skips
+    // them and they are re-rendered when the language changes.
+    var DYNAMIC = '#load-text, #global-stats, #build-label, #btn-lang, #error-title, #error-text, ' +
+                  '#end-title, #end-sub, #end-score, #end-stats, #end-unlocks, #submit-status, #btn-submit, ' +
+                  '#scores-body, #scores-status, #profile-since, #profile-stats, #ach-list, #ach-count, ' +
+                  '#fps, #volume-out, #toasts, #btn-pause, #btn-fullscreen';
+    var I18N_ATTRS = ['aria-label', 'title', 'placeholder'];
+    var originals = new WeakMap();        // text node -> Romanian text, element -> {attr: text}
+    // Search engines render pages with an English browser; they get the
+    // page's declared language so the indexed text matches lang/title/meta.
+    var IS_CRAWLER = /bot\b|crawl|spider|slurp|lighthouse|inspectiontool/i.test(navigator.userAgent || '');
+
+    function t(ro, vars) {
+        var s = lang === 'en' && Object.prototype.hasOwnProperty.call(EN, ro) ? EN[ro] : ro;
+        if (!vars) return s;
+        return s.replace(/\{(\w+)\}/g, function (m, k) { return k in vars ? String(vars[k]) : m; });
+    }
+
+    // 'ro' or 'en' from the browser's preferred languages (first match
+    // wins); anything else gets English.
+    function detectLang() {
+        var list = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ''];
+        for (var i = 0; i < list.length; i++) {
+            var primary = String(list[i]).toLowerCase().split('-')[0];
+            if (primary === 'ro' || primary === 'mo') return 'ro';
+            if (primary === 'en') return 'en';
+        }
+        return 'en';
+    }
+    function wantedLang() {
+        if (settings.lang === 'ro' || settings.lang === 'en') return settings.lang;
+        return IS_CRAWLER ? 'ro' : detectLang();
+    }
+
+    function translateText(s) {
+        var key = s.replace(/\s+/g, ' ').trim();
+        var out = t(key);
+        return out === key ? s : s.match(/^\s*/)[0] + out + s.match(/\s*$/)[0];
+    }
+    function translatePage() {
+        if (lang === 'ro' && !pageTranslated) return;     // still the original markup
+        pageTranslated = true;
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+            acceptNode: function (n) {
+                var p = n.parentElement;
+                return p && /\S/.test(n.nodeValue) && !p.closest('script, style, noscript, svg, ' + DYNAMIC)
+                    ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+            }
+        });
+        for (var n = walker.nextNode(); n; n = walker.nextNode()) {
+            if (!originals.has(n)) originals.set(n, n.nodeValue);
+            n.nodeValue = translateText(originals.get(n));
+        }
+        $all('[' + I18N_ATTRS.join('], [') + ']').forEach(function (el) {
+            if (el.closest(DYNAMIC)) return;
+            var o = originals.get(el);
+            if (!o) {
+                o = {};
+                I18N_ATTRS.forEach(function (a) { if (el.hasAttribute(a)) o[a] = el.getAttribute(a); });
+                originals.set(el, o);
+            }
+            Object.keys(o).forEach(function (a) { el.setAttribute(a, translateText(o[a])); });
+        });
+    }
 
     function playerName() {
         var n = (store.getRaw(KEYS.name, '') || '').trim();
@@ -191,6 +269,7 @@
         btn.querySelector('use').setAttribute('href', on ? '#i-sound' : '#i-mute');
     }
     function applyAll() {
+        applyLanguage();
         applyQuality();
         applyAudio();
         call('set_difficulty', settings.difficulty);
@@ -320,8 +399,18 @@
         call('set_paused', p ? 1 : 0);
         var btn = $('#btn-pause');
         btn.querySelector('use').setAttribute('href', p ? '#i-play' : '#i-pause');
-        btn.setAttribute('aria-label', p ? 'Continuă (P)' : 'Pauză (P)');
+        syncHudLabels();
         if (p) releaseWakeLock(); else if (state.inRun) requestWakeLock();
+    }
+    // Pause/fullscreen buttons change label with their state (and language).
+    function syncHudLabels() {
+        var pl = t(state.paused ? 'Continuă (P)' : 'Pauză (P)');
+        var fl = t(fsElement() ? 'Ieși din ecran complet (F)' : 'Ecran complet (F)');
+        [['#btn-pause', pl], ['#btn-fullscreen', fl]].forEach(function (b) {
+            var el = $(b[0]);
+            el.setAttribute('aria-label', b[1]);
+            el.title = b[1];
+        });
     }
     function pause() {
         if (!runActive()) return;
@@ -369,13 +458,13 @@
             if (IS_TOUCH && screen.orientation && screen.orientation.lock) {
                 screen.orientation.lock('landscape').catch(function () {});
             }
-        }).catch(function () { toast('Ecranul complet nu este disponibil aici'); });
+        }).catch(function () { toast(t('Ecranul complet nu este disponibil aici')); });
     }
     function onFsChange() {
         var on = !!fsElement();
         var btn = $('#btn-fullscreen');
         btn.querySelector('use').setAttribute('href', on ? '#i-shrink' : '#i-expand');
-        btn.setAttribute('aria-label', on ? 'Ieși din ecran complet (F)' : 'Ecran complet (F)');
+        syncHudLabels();
         setTimeout(resizeCanvas, 60);
     }
     document.addEventListener('fullscreenchange', onFsChange);
@@ -432,7 +521,7 @@
             startRun(state.mode);
         } else {
             lastRPress = now;
-            toast('Apasă R din nou pentru restart', 1500);
+            toast(t('Apasă R din nou pentru restart'), 1500);
         }
     }
 
@@ -599,13 +688,13 @@
         list.forEach(function (a) {
             var chip = document.createElement('span');
             chip.className = 'chip-gold';
-            chip.title = a.desc;
+            chip.title = t(a.desc);
             chip.appendChild(svgIcon('i-medal'));
-            chip.appendChild(document.createTextNode(a.title));
+            chip.appendChild(document.createTextNode(t(a.title)));
             box.appendChild(chip);
         });
         box.hidden = !box.childNodes.length;
-        if (list.length && !$('#dlg-end').open) toast('Realizare deblocată: ' + list[0].title);
+        if (list.length && !$('#dlg-end').open) toast(t('Realizare deblocată: {title}', { title: t(list[0].title) }));
     }
 
     function svgIcon(id) {
@@ -626,9 +715,11 @@
 
     function renderProfile() {
         var p = loadProfile();
-        $('#profile-since').textContent = p.firstDay
-            ? 'Joci din ' + p.firstDay + (playerName() ? ' · în clasament ca ' + playerName() : '')
-            : 'Încă nu ai terminat nicio rundă. Statisticile apar după prima.';
+        var name = playerName();
+        $('#profile-since').textContent = !p.firstDay
+            ? t('Încă nu ai terminat nicio rundă. Statisticile apar după prima.')
+            : name ? t('Joci din {date} · în clasament ca {name}', { date: p.firstDay, name: name })
+                   : t('Joci din {date}', { date: p.firstDay });
         var items = [
             ['Runde', p.runs], ['Timp de joc', fmtDuration(p.playSeconds)], ['Victorii', p.victories],
             ['Obiecte distruse', p.destroyed], ['Case', p.houses], ['Copaci', p.trees],
@@ -640,7 +731,7 @@
         grid.textContent = '';
         items.forEach(function (it) {
             var box = document.createElement('div');
-            var dt = document.createElement('dt'); dt.textContent = it[0];
+            var dt = document.createElement('dt'); dt.textContent = t(it[0]);
             var dd = document.createElement('dd'); dd.textContent = typeof it[1] === 'number' ? fmt(it[1]) : it[1];
             box.appendChild(dt); box.appendChild(dd); grid.appendChild(box);
         });
@@ -654,13 +745,14 @@
             var li = document.createElement('li');
             li.className = 'ach' + (when ? ' done' : '');
             li.appendChild(svgIcon(when ? 'i-medal' : 'i-lock'));
-            var b = document.createElement('b'); b.textContent = a.title; li.appendChild(b);
+            var b = document.createElement('b'); b.textContent = t(a.title); li.appendChild(b);
             var side = document.createElement('span'); side.className = 'prog';
             if (when) side.textContent = when;
             else if (a.progress) { var pr = a.progress(p); side.textContent = fmt(Math.min(pr[0], pr[1])) + '/' + fmt(pr[1]); }
             li.appendChild(side);
-            var small = document.createElement('small'); small.textContent = a.desc; li.appendChild(small);
-            li.setAttribute('aria-label', a.title + ': ' + a.desc + (when ? ' — deblocată' : ' — blocată'));
+            var small = document.createElement('small'); small.textContent = t(a.desc); li.appendChild(small);
+            li.setAttribute('aria-label', t(when ? '{title}: {desc} — deblocată' : '{title}: {desc} — blocată',
+                                            { title: t(a.title), desc: t(a.desc) }));
             list.appendChild(li);
         });
         $('#ach-count').textContent = done + ' / ' + ACHIEVEMENTS.length;
@@ -688,13 +780,13 @@
         if (st.score <= 0) {
             setSubmitUi('hidden');
         } else if (state.run && state.run.submitted) {
-            setSubmitUi('done', 'Scorul acestei runde a fost deja trimis.');
+            setSubmitUi('done', t('Scorul acestei runde a fost deja trimis.'));
         } else if (name && !canContinue) {
             submitScore(name);            // known player: submit straight away
         } else {
-            setSubmitUi('ready', canContinue
+            setSubmitUi('ready', t(canContinue
                 ? 'Trimite acum sau continuă în modul infinit și trimite scorul final.'
-                : 'Alege un nume ca să apari în clasamentul global.');
+                : 'Alege un nume ca să apari în clasamentul global.'));
         }
         if (!canContinue && !name) setTimeout(function () { $('#end-name').focus(); }, 50);
     });
@@ -702,13 +794,16 @@
     function renderEnd(st, record) {
         var dlg = $('#dlg-end');
         var title, sub;
-        if (st.outcome === OUTCOME.TIME_UP) { title = 'Timp expirat'; sub = 'Time Attack · 3 minute'; }
-        else if (st.outcome === OUTCOME.VICTORY) { title = 'Victorie!'; sub = 'Toate cele 10 valuri au fost complete'; }
-        else { title = 'Game over'; sub = st.endless ? 'Mod infinit · valul ' + st.wave : 'Tornada s-a risipit la valul ' + st.wave; }
+        if (st.outcome === OUTCOME.TIME_UP) { title = t('Timp expirat'); sub = t('Time Attack · 3 minute'); }
+        else if (st.outcome === OUTCOME.VICTORY) { title = t('Victorie!'); sub = t('Toate cele 10 valuri au fost complete'); }
+        else {
+            title = 'Game over';
+            sub = t(st.endless ? 'Mod infinit · valul {wave}' : 'Tornada s-a risipit la valul {wave}', { wave: st.wave });
+        }
         dlg.classList.toggle('victory', st.outcome !== OUTCOME.GAME_OVER);
         dlg.classList.toggle('gameover', st.outcome === OUTCOME.GAME_OVER);
         $('#end-title').textContent = title;
-        $('#end-sub').textContent = sub + ' · ' + MODE_LABELS[st.mode] + ' · ' + DIFF_LABELS[st.difficulty];
+        $('#end-sub').textContent = sub + ' · ' + boardLabel(st.mode, st.difficulty);
         $('#end-score').textContent = fmt(st.score);
         $('#end-record').hidden = !record;
 
@@ -721,7 +816,7 @@
         grid.textContent = '';
         items.forEach(function (it) {
             var box = document.createElement('div');
-            var dt = document.createElement('dt'); dt.textContent = it[0];
+            var dt = document.createElement('dt'); dt.textContent = t(it[0]);
             var dd = document.createElement('dd'); dd.textContent = typeof it[1] === 'number' ? fmt(it[1]) : it[1];
             box.appendChild(dt); box.appendChild(dd); grid.appendChild(box);
         });
@@ -736,14 +831,14 @@
         status.className = 'hint' + (kind ? ' ' + kind : '');
         btn.disabled = mode === 'busy' || mode === 'done';
         $('#end-name').disabled = mode === 'busy' || mode === 'done';
-        btn.textContent = mode === 'busy' ? 'Se trimite…' : (mode === 'done' ? 'Trimis' : 'Trimite');
+        btn.textContent = t(mode === 'busy' ? 'Se trimite…' : (mode === 'done' ? 'Trimis' : 'Trimite'));
     }
 
     function submitScore(name) {
         var run = state.run, st = state.lastEnd;
         if (!st || st.score <= 0) return;
-        if (name && !NAME_RE.test(name)) { setSubmitUi('ready', 'Doar litere, cifre, spațiu și . _ -', 'err'); return; }
-        if (!run) { setSubmitUi('ready', 'Clasamentul global nu este disponibil acum.', 'err'); return; }
+        if (name && !NAME_RE.test(name)) { setSubmitUi('ready', t('Doar litere, cifre, spațiu și . _ -'), 'err'); return; }
+        if (!run) { setSubmitUi('ready', t('Clasamentul global nu este disponibil acum.'), 'err'); return; }
         setSubmitUi('busy', '');
         run.promise.then(function () {
             if (!run.id) throw { offline: true };
@@ -765,36 +860,36 @@
             if (res.status === 200) {
                 run.submitted = true;
                 if (name) setPlayerName(name);
-                setSubmitUi('done', 'Trimis! Locul #' + res.body.rank + ' în clasamentul ' +
-                    MODE_LABELS[st.mode] + ' · ' + DIFF_LABELS[st.difficulty] + '.', 'ok');
+                setSubmitUi('done', t('Trimis! Locul #{rank} în clasamentul {board}.',
+                    { rank: res.body.rank, board: boardLabel(st.mode, st.difficulty) }), 'ok');
                 scoresCache = {};
                 unlockLater(res.body.rank <= 10 ? ['global', 'top10'] : ['global']);
             } else if (res.status === 409 && err === 'name taken') {
-                setSubmitUi('ready', 'Numele este rezervat de alt jucător. Alege altul.', 'err');
+                setSubmitUi('ready', t('Numele este rezervat de alt jucător. Alege altul.'), 'err');
                 $('#end-name').focus();
             } else if (res.status === 409) {
                 run.submitted = true;
-                setSubmitUi('done', 'Scorul acestei runde a fost deja trimis.');
+                setSubmitUi('done', t('Scorul acestei runde a fost deja trimis.'));
             } else if (res.status === 422 && err === 'name not allowed') {
-                setSubmitUi('ready', 'Numele nu este permis. Alege altul.', 'err');
+                setSubmitUi('ready', t('Numele nu este permis. Alege altul.'), 'err');
                 $('#end-name').focus();
             } else if (res.status === 422) {
                 run.submitted = true;
-                setSubmitUi('done', 'Scorul nu a putut fi validat de server.', 'err');
+                setSubmitUi('done', t('Scorul nu a putut fi validat de server.'), 'err');
             } else if (res.status === 403 && err === 'banned') {
                 run.submitted = true;
-                setSubmitUi('done', 'Acest nume sau dispozitiv a fost blocat în clasamentul global.', 'err');
+                setSubmitUi('done', t('Acest nume sau dispozitiv a fost blocat în clasamentul global.'), 'err');
             } else if (res.status === 429) {
-                setSubmitUi('ready', 'Prea multe încercări. Mai așteaptă puțin.', 'err');
+                setSubmitUi('ready', t('Prea multe încercări. Mai așteaptă puțin.'), 'err');
             } else if (res.status === 404) {
-                setSubmitUi('done', 'Runda a expirat și nu mai poate fi trimisă.', 'err');
+                setSubmitUi('done', t('Runda a expirat și nu mai poate fi trimisă.'), 'err');
             } else {
-                setSubmitUi('ready', 'Serverul nu răspunde. Încearcă din nou.', 'err');
+                setSubmitUi('ready', t('Serverul nu răspunde. Încearcă din nou.'), 'err');
             }
         }).catch(function (e) {
             setSubmitUi(e && e.offline ? 'done' : 'ready',
-                e && e.offline ? 'Ești offline: scorul a rămas salvat pe acest dispozitiv.'
-                               : 'Eroare de rețea. Încearcă din nou.', 'err');
+                t(e && e.offline ? 'Ești offline: scorul a rămas salvat pe acest dispozitiv.'
+                                 : 'Eroare de rețea. Încearcă din nou.'), 'err');
         });
     }
 
@@ -810,26 +905,28 @@
             delete $('#dlg-end').dataset.autoPaused;
             closeDialog('dlg-end');
             setPaused(false);
-            if (state.run && state.run.submitted) toast('Scorul a fost deja trimis; runda infinită e doar pentru distracție.', 3500);
-            else toast('Mod infinit! Scorul final se trimite la sfârșit.', 2500);
+            if (state.run && state.run.submitted) toast(t('Scorul a fost deja trimis; runda infinită e doar pentru distracție.'), 3500);
+            else toast(t('Mod infinit! Scorul final se trimite la sfârșit.'), 2500);
         }
     });
     $('#btn-share').addEventListener('click', share);
+
+    function boardLabel(mode, diff) { return t(MODE_LABELS[mode]) + ' · ' + t(DIFF_LABELS[diff]); }
 
     function share() {
         var st = state.lastEnd;
         var score = st ? st.score : stat(STAT.SCORE);
         var mode = st ? st.mode : state.mode;
         var diff = st ? st.difficulty : settings.difficulty;
-        var text = 'Am făcut ' + fmt(score) + ' puncte în Tornada 3D (' + MODE_LABELS[mode] + ', ' +
-                   DIFF_LABELS[diff] + '). Poți mai mult?';
+        var text = t('Am făcut {score} puncte în Tornada 3D ({mode}, {diff}). Poți mai mult?',
+                     { score: fmt(score), mode: t(MODE_LABELS[mode]), diff: t(DIFF_LABELS[diff]) });
         var url = location.origin + '/';
         if (navigator.share) {
-            navigator.share({ title: 'Tornada 3D', text: text, url: url }).catch(function () {});
+            navigator.share({ title: t('Tornada 3D'), text: text, url: url }).catch(function () {});
         } else if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text + ' ' + url)
-                .then(function () { toast('Copiat în clipboard'); })
-                .catch(function () { toast('Nu am putut copia textul'); });
+                .then(function () { toast(t('Copiat în clipboard')); })
+                .catch(function () { toast(t('Nu am putut copia textul')); });
         }
     }
 
@@ -863,7 +960,8 @@
         rows.forEach(function (r, i) {
             var tr = document.createElement('tr');
             if (highlight && r.name && r.name.toLowerCase() === highlight.toLowerCase()) tr.className = 'me';
-            [r.rank || i + 1, r.name || '—', fmt(r.score), r.wave, r.date || ''].forEach(function (v, c) {
+            var name = r.name === 'ANONIM' ? t('ANONIM') : (r.name || '—');   // server's placeholder name
+            [r.rank || i + 1, name, fmt(r.score), r.wave, r.date || ''].forEach(function (v, c) {
                 var td = document.createElement('td');
                 td.textContent = v;
                 if (c === 2 || c === 3) td.className = 'num';
@@ -885,21 +983,21 @@
             var rows = list.filter(function (x) {
                 return MODES[x.mode || 0] === lb.mode && String(x.difficulty == null ? 1 : x.difficulty) === lb.difficulty;
             }).slice(0, 10).map(function (x, i) {
-                return { rank: i + 1, name: me || 'Tu', score: x.score, wave: x.wave, date: x.date };
+                return { rank: i + 1, name: me || t('Tu'), score: x.score, wave: x.wave, date: x.date };
             });
             renderRows(rows, null);
-            status.textContent = rows.length ? '' : 'Niciun scor pe acest dispozitiv pentru filtrul ales.';
+            status.textContent = rows.length ? '' : t('Niciun scor pe acest dispozitiv pentru filtrul ales.');
             return;
         }
         var key = [lb.mode, lb.difficulty, lb.period].join('|');
         var cached = scoresCache[key];
         if (cached && Date.now() - cached.at < 15000) {
             renderRows(cached.rows, me);
-            status.textContent = cached.rows.length ? '' : 'Încă nu există scoruri aici. Fii primul!';
+            status.textContent = cached.rows.length ? '' : t('Încă nu există scoruri aici. Fii primul!');
             return;
         }
         renderRows([], null);
-        status.textContent = 'Se încarcă…';
+        status.textContent = t('Se încarcă…');
         fetch(API + '/scores?mode=' + lb.mode + '&difficulty=' + lb.difficulty + '&period=' + lb.period + '&limit=25',
               { credentials: 'same-origin' })
             .then(function (r) { if (!r.ok) throw r.status; return r.json(); })
@@ -908,9 +1006,9 @@
                 scoresCache[key] = { at: Date.now(), rows: rows };
                 if ([lb.mode, lb.difficulty, lb.period].join('|') !== key) return;
                 renderRows(rows, me);
-                status.textContent = rows.length ? '' : 'Încă nu există scoruri aici. Fii primul!';
+                status.textContent = rows.length ? '' : t('Încă nu există scoruri aici. Fii primul!');
             })
-            .catch(function () { status.textContent = 'Clasamentul nu este disponibil momentan.'; });
+            .catch(function () { status.textContent = t('Clasamentul nu este disponibil momentan.'); });
     }
 
     function openScores() {
@@ -941,27 +1039,28 @@
     function loadGlobalStats() {
         fetch(API + '/stats', { credentials: 'same-origin' })
             .then(function (r) { if (!r.ok) throw r.status; return r.json(); })
-            .then(function (s) {
-                if (!s) return;
-                if (!s.scores) {
-                    $('#global-stats').textContent = 'Clasamentul global e gol — primul scor trimis ia locul 1.';
-                    return;
-                }
-                var parts = [];
-                if (s.houses) parts.push(fmt(s.houses) + ' case');
-                if (s.vehicles) parts.push(fmt(s.vehicles) + ' mașini');
-                if (s.animals) parts.push(fmt(s.animals) + ' animale');
-                $('#global-stats').textContent = parts.length
-                    ? 'Jucătorii au distrus deja ' + parts.join(', ') + '. Record: ' + fmt(s.best) + ' puncte.'
-                    : 'Record global: ' + fmt(s.best) + ' puncte.';
-            })
+            .then(function (s) { if (s) { state.globalStats = s; renderGlobalStats(); } })
             .catch(function () { /* offline: leave it empty */ });
+    }
+    function renderGlobalStats() {
+        var s = state.globalStats;
+        if (!s) return;
+        var el = $('#global-stats');
+        if (!s.scores) { el.textContent = t('Clasamentul global e gol — primul scor trimis ia locul 1.'); return; }
+        var parts = [];
+        if (s.houses) parts.push(t('{n} case', { n: fmt(s.houses) }));
+        if (s.vehicles) parts.push(t('{n} mașini', { n: fmt(s.vehicles) }));
+        if (s.animals) parts.push(t('{n} animale', { n: fmt(s.animals) }));
+        el.textContent = parts.length
+            ? t('Jucătorii au distrus deja {list}. Record: {best} puncte.', { list: parts.join(', '), best: fmt(s.best) })
+            : t('Record global: {best} puncte.', { best: fmt(s.best) });
     }
 
     // ── Settings dialog ───────────────────────────────────────────────
     function syncSettingsUi() {
         $all('[data-setting="quality"]').forEach(function (g) { setSegmented(g, settings.quality); });
         $all('[data-setting="difficulty"]').forEach(function (g) { setSegmented(g, settings.difficulty); });
+        $all('[data-setting="lang"]').forEach(function (g) { setSegmented(g, settings.lang); });
         $('#set-volume').value = Math.round(settings.volume * 100);
         $('#volume-out').textContent = Math.round(settings.volume * 100) + '%';
         $('#set-sound').checked = !settings.muted;
@@ -977,15 +1076,16 @@
             var b = e.target.closest('button');
             if (!b) return;
             var key = group.dataset.setting;
-            var v = b.dataset.value === 'auto' ? 'auto' : +b.dataset.value;
+            var v = key === 'lang' || b.dataset.value === 'auto' ? b.dataset.value : +b.dataset.value;
             if (settings[key] === v) return;
             settings[key] = v;
             saveSettings();
+            if (key === 'lang') applyLanguage();
             if (key === 'quality') { state.autoQuality = null; applyQuality(); }
             if (key === 'difficulty') {
                 call('set_difficulty', v);
                 lb.difficulty = String(v);
-                if (runActive() || state.paused) toast('Dificultatea se aplică de la următoarea rundă');
+                if (runActive() || state.paused) toast(t('Dificultatea se aplică de la următoarea rundă'));
             }
             syncSettingsUi();
         });
@@ -1007,24 +1107,29 @@
     $('#btn-copy-profile').addEventListener('click', function () {
         var code = playerKey();
         if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(code).then(function () { toast('Cod copiat'); }, function () { $('#profile-code').select(); });
+            navigator.clipboard.writeText(code).then(function () { toast(t('Cod copiat')); }, function () { $('#profile-code').select(); });
         } else { $('#profile-code').select(); }
     });
     $('#btn-import-profile').addEventListener('click', function () {
         var v = $('#profile-import').value.trim();
-        if (!/^[A-Za-z0-9_-]{22,64}$/.test(v)) { toast('Cod de profil invalid'); return; }
+        if (!/^[A-Za-z0-9_-]{22,64}$/.test(v)) { toast(t('Cod de profil invalid')); return; }
         store.set(KEYS.player, v);
         $('#profile-import').value = '';
         syncSettingsUi();
-        toast('Profil importat');
+        toast(t('Profil importat'));
     });
     $('#btn-clear-data').addEventListener('click', function () {
-        if (!confirm('Ștergi scorurile locale, statisticile, realizările și setările de pe acest dispozitiv? ' +
-                     'Codul de profil (numele rezervat) rămâne.')) return;
+        if (!confirm(t('Ștergi scorurile locale, statisticile, realizările și setările de pe acest dispozitiv? Codul de profil (numele rezervat) rămâne.'))) return;
         [KEYS.settings, KEYS.scores, KEYS.tutorial, KEYS.profile].forEach(store.remove);
         Object.keys(defaults).forEach(function (k) { settings[k] = defaults[k]; });
         applyAll();
-        toast('Datele locale au fost șterse');
+        toast(t('Datele locale au fost șterse'));
+    });
+    $('#btn-lang').addEventListener('click', function () {
+        settings.lang = lang === 'en' ? 'ro' : 'en';
+        saveSettings();
+        applyLanguage();
+        syncSettingsUi();
     });
     function toggleMute() { settings.muted = !settings.muted; applyAudio(); saveSettings(); syncSettingsUi(); }
 
@@ -1162,7 +1267,7 @@
         if (span >= 1000) {
             var fps = perf.frames * 1000 / span;
             perf.frames = 0; perf.t0 = ts;
-            if (settings.fps) $('#fps').textContent = Math.round(fps) + ' FPS · ' + ['Scăzută', 'Medie', 'Ridicată'][state.quality];
+            if (settings.fps) $('#fps').textContent = Math.round(fps) + ' FPS · ' + t(['Scăzută', 'Medie', 'Ridicată'][state.quality]);
             // Auto quality: step down after ~4 s of sustained low frame rate.
             if (settings.quality === 'auto' && phase() === PHASE.PLAYING && !state.paused && !document.hidden) {
                 perf.low = fps < 28 ? perf.low + 1 : 0;
@@ -1170,7 +1275,7 @@
                     perf.low = 0;
                     state.autoQuality = state.quality - 1;
                     applyQuality();
-                    toast('Calitate redusă automat pentru un joc mai fluid');
+                    toast(t('Calitate redusă automat pentru un joc mai fluid'));
                 }
             }
         }
@@ -1178,24 +1283,50 @@
 
     window.addEventListener('gamepadconnected', function () {
         state.gamepad = true;
-        toast('Gamepad conectat');
+        toast(t('Gamepad conectat'));
     });
 
     // ── Loading the game ──────────────────────────────────────────────
     var build = { build: 'dev', js: 'tornado.js', wasm: 'tornado.wasm', data: 'tornado.data' };
     try { build = JSON.parse($('#build-info').textContent); } catch (e) { /* defaults */ }
-    if (build.build && build.build !== 'dev') $('#build-label').textContent = 'versiunea ' + build.build;
+    function renderBuildLabel() {
+        if (build.build && build.build !== 'dev') $('#build-label').textContent = t('versiunea {v}', { v: build.build });
+    }
 
+    // title/text are Romanian keys; a raw browser message is passed as text.
     function showError(title, text) {
-        $('#error-title').textContent = title;
-        $('#error-text').textContent = text;
+        $('#error-title').textContent = t(title);
+        $('#error-text').textContent = t(text);
         $('#screen-error').hidden = false;
         $('#screen-start').hidden = true;
     }
 
-    function setProgress(frac, text) {
+    function setProgress(frac, text, vars) {
         $('#load-bar').style.width = Math.round(clamp(frac, 0.04, 1) * 100) + '%';
-        if (text) $('#load-text').textContent = text;
+        if (text) { state.loadText = [text, vars]; $('#load-text').textContent = t(text, vars); }
+    }
+
+    // Applies the language setting to the page, the game and the parts of
+    // the UI this file has already drawn.
+    function applyLanguage() {
+        var next = wantedLang();
+        var changed = next !== lang;
+        lang = next;
+        NUM = new Intl.NumberFormat(lang === 'en' ? 'en-US' : 'ro-RO');
+        root.lang = lang;
+        document.title = t(PAGE_TITLE);
+        translatePage();
+        syncHudLabels();
+        var other = lang === 'en' ? 'ro' : 'en';
+        $('#btn-lang').textContent = other === 'en' ? 'English' : 'Română';
+        $('#btn-lang').lang = other;
+        call('set_language', lang === 'en' ? 1 : 0);
+        if (!changed) return;
+        renderGlobalStats();
+        renderBuildLabel();
+        if (state.loadText && !state.ready) $('#load-text').textContent = t(state.loadText[0], state.loadText[1]);
+        if ($('#dlg-profile').open) renderProfile();
+        if ($('#dlg-scores').open) loadScores();
     }
 
     function onReady() {
@@ -1214,6 +1345,8 @@
     }
 
     function boot() {
+        applyLanguage();
+        renderBuildLabel();
         syncSettingsUi();
         initTouch();
         loadGlobalStats();
@@ -1221,8 +1354,7 @@
 
         if (!supportsWebGL2()) {
             showError('Browserul nu suportă WebGL 2',
-                'Tornada 3D are nevoie de WebGL 2. Folosește o versiune recentă de Chrome, Edge, Firefox sau ' +
-                'Safari și verifică dacă accelerarea hardware este activată.');
+                'Tornada 3D are nevoie de WebGL 2. Folosește o versiune recentă de Chrome, Edge, Firefox sau Safari și verifică dacă accelerarea hardware este activată.');
             return;
         }
         resizeCanvas();
@@ -1238,7 +1370,7 @@
             setStatus: function (text) {
                 // "Downloading data... (12345/67890)"
                 var m = /\((\d+(?:\.\d+)?)\/(\d+)\)/.exec(text || '');
-                if (m) setProgress(0.2 + 0.7 * (+m[1] / +m[2]), 'Se descarcă… ' + Math.round(100 * +m[1] / +m[2]) + '%');
+                if (m) setProgress(0.2 + 0.7 * (+m[1] / +m[2]), 'Se descarcă… {p}%', { p: Math.round(100 * +m[1] / +m[2]) });
             },
             monitorRunDependencies: function (left) {
                 if (left === 0) setProgress(0.95, 'Pregătire…');
@@ -1278,7 +1410,7 @@
             });
             navigator.serviceWorker.addEventListener('controllerchange', function () {
                 // A new deploy took over. Never reload mid-run; just say so.
-                if (hadController) toast('Versiune nouă disponibilă — reîncarcă pagina când termini runda.');
+                if (hadController) toast(t('Versiune nouă disponibilă — reîncarcă pagina când termini runda.'));
                 hadController = true;
             });
         } else {
@@ -1306,7 +1438,7 @@
     window.addEventListener('appinstalled', function () {
         installPrompt = null;
         btnInstall.hidden = true;
-        toast('Tornada 3D a fost instalată');
+        toast(t('Tornada 3D a fost instalată'));
     });
 
     boot();

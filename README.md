@@ -25,6 +25,8 @@ Emscripten/WASM). Live at **https://tornado.micutu.com**.
   local history, score sharing, portable player profile code
 - Player profile: lifetime statistics and 21 achievements (per run, cumulative, streaks,
   leaderboard placings), unlocked live on the results screen
+- Romanian and English (page and in-game HUD), picked from the browser's languages and
+  switchable in Settings; the HTML stays Romanian for search engines
 - Installable app (manifest, icons) that also plays offline after the first visit
 - SEO: canonical URL, Open Graph / X preview card, JSON-LD, sitemap, robots, real 404
 
@@ -89,13 +91,25 @@ and then loads `tornado.js`. C++ ⇄ JS talk through exported functions (`start_
 | C | Share the score |
 | Gamepad | Left stick moves the camera, right stick steers, LB/RB turn, A plays, Start pauses |
 
+### Languages
+
+The page is written in Romanian. English comes from `web/i18n.js`, a dictionary keyed by the
+Romanian text: `app.js` translates the static page in place and passes the strings it builds
+through `t('…')`. The in-game HUD text lives in `src/i18n.h` (ASCII only, the bitmap font has
+no diacritics) and follows `set_language()` from the page, or `$LANG` on desktop.
+
+When adding UI text, write it in Romanian and add the English entry; `tools/test_i18n.py`
+fails on any string without one, on mismatched `{placeholders}` and on unused entries.
+Search engines always get the Romanian page.
+
 ## Tests
 
 ```bash
-ctest --test-dir build --output-on-failure      # C++ (math, terrain, constants)
+ctest --test-dir build --output-on-failure      # C++ (math, terrain, constants, HUD text)
 python3 server/test_leaderboard.py              # leaderboard API (anti-forgery, limits, migration)
 python3 server/test_lbadmin.py                  # moderation CLI
 python3 tools/test_package_site.py              # deploy packaging
+python3 tools/test_i18n.py                      # English dictionary covers every page string
 cd tests/e2e && npm ci && npx playwright install chromium && node smoke.mjs ../../dist
 ```
 
@@ -192,10 +206,11 @@ check fails. Asset names carry a content hash, so nothing needs purging on Cloud
 │   ├── constants.h           # gameplay/rendering tunables (shared with the API checks)
 │   ├── web_bridge.h          # run lifecycle events + stats for the web UI
 │   ├── audio_web.h           # Web Audio effects (no-ops on desktop)
+│   ├── i18n.h                # HUD text, Romanian + English
 │   ├── terrain_noise.h, font5x7.h
 │   └── test_math.cpp         # unit tests
 ├── shaders/                  # GLSL 330 core, patched to GLSL ES 300 for WebGL
-├── web/                      # static site: index.html, app.js, style.css, sw.js,
+├── web/                      # static site: index.html, app.js, i18n.js, style.css, sw.js,
 │                             # manifest, icons, robots.txt, sitemap.xml, 404.html
 ├── server/                   # leaderboard API + tests, systemd units, backup, nginx/
 ├── tools/                    # dev_server.py, package_site.py (+ tests), make_icons.js

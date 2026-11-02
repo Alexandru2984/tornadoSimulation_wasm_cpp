@@ -1,5 +1,6 @@
 // Browser smoke test: boots the packaged site under the production CSP and
-// walks the main UI paths on a desktop and a phone viewport.
+// walks the main UI paths on a desktop and a phone viewport, in Romanian
+// and in English.
 //
 //   python3 tools/package_site.py --version ci        # -> dist/
 //   cd tests/e2e && npm ci && npx playwright install chromium
@@ -52,7 +53,7 @@ function watch(page) {
 
 async function desktop(browser) {
     console.log('desktop 1366x768');
-    const ctx = await browser.newContext({ viewport: { width: 1366, height: 768 } });
+    const ctx = await browser.newContext({ viewport: { width: 1366, height: 768 }, locale: 'ro-RO' });
     const page = await ctx.newPage();
     const problems = watch(page);
     const runs = [];
@@ -103,7 +104,7 @@ async function desktop(browser) {
 
 async function phone(browser) {
     console.log('phone 390x844 (touch)');
-    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: 'ro-RO' });
     const page = await ctx.newPage();
     const problems = watch(page);
     await page.goto(BASE + '/');
@@ -113,6 +114,63 @@ async function phone(browser) {
     const playBox = await page.locator('#btn-play').boundingBox();
     check(playBox && playBox.y + playBox.height <= 844 && playBox.height >= 44, 'play button visible above the fold, >=44px tall');
     check(problems.length === 0, 'phone: no console errors, page errors or failed requests' +
+        (problems.length ? '\n        ' + problems.join('\n        ') : ''));
+    await ctx.close();
+}
+
+// Romanian text left on the page (diacritics are a reliable tell), outside
+// elements that are Romanian on purpose (lang="ro", e.g. the language switch).
+function romanianLeftovers() {
+    const out = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const p = n.parentElement;
+        if (!p || p.closest('script, style, noscript, [lang="ro"]')) continue;
+        if (/[ăâîșțĂÂÎȘȚ]/.test(n.nodeValue)) out.push(n.nodeValue.trim().slice(0, 60));
+    }
+    document.querySelectorAll('[aria-label], [title], [placeholder]').forEach(el => {
+        if (el.closest('[lang="ro"]')) return;
+        ['aria-label', 'title', 'placeholder'].forEach(a => {
+            const v = el.getAttribute(a);
+            if (v && /[ăâîșțĂÂÎȘȚ]/.test(v)) out.push(`${a}="${v}"`);
+        });
+    });
+    return out;
+}
+
+async function english(browser) {
+    console.log('english (browser locale en-US)');
+    const ctx = await browser.newContext({ viewport: { width: 1366, height: 768 }, locale: 'en-US' });
+    const page = await ctx.newPage();
+    const problems = watch(page);
+    await page.goto(BASE + '/');
+    await page.waitForFunction(() => !document.querySelector('#btn-play').disabled, null, { timeout: 120000 });
+    await page.waitForFunction(() => document.querySelector('#global-stats').textContent.trim().length > 0,
+        null, { timeout: 10000 }).catch(() => {});
+    check(await page.evaluate(() => document.documentElement.lang) === 'en', 'English browser gets <html lang="en">');
+    check((await page.textContent('#btn-play')).trim() === 'Play' && /^Tornado 3D/.test(await page.title()),
+        'page text and title are in English');
+    const left = await page.evaluate(romanianLeftovers);
+    check(left.length === 0, 'no Romanian text left on the page' + (left.length ? ': ' + left.slice(0, 5).join(' | ') : ''));
+    check(await page.evaluate(() => typeof Module._set_language === 'function'), 'game exports set_language for the HUD');
+
+    await page.click('#btn-settings');
+    await page.click('[data-setting="lang"] [data-value="ro"]');
+    check((await page.textContent('#btn-play')).trim() === 'Joacă' &&
+          await page.evaluate(() => document.documentElement.lang) === 'ro' &&
+          /^Tornada 3D/.test(await page.title()), 'switching to Română restores the original page');
+    await page.click('[data-setting="lang"] [data-value="en"]');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await page.waitForFunction(() => !document.querySelector('#btn-play').disabled, null, { timeout: 120000 });
+    check((await page.textContent('#btn-play')).trim() === 'Play', 'language choice survives a reload');
+    await page.click('#btn-profile');
+    await page.waitForSelector('#dlg-profile[open]', { timeout: 5000 });
+    check(/Achievements/.test(await page.textContent('#dlg-profile')) &&
+          (await page.evaluate(romanianLeftovers)).length === 0, 'profile dialog renders in English');
+    await page.keyboard.press('Escape');
+
+    check(problems.length === 0, 'english: no console errors, page errors or failed requests' +
         (problems.length ? '\n        ' + problems.join('\n        ') : ''));
     await ctx.close();
 }
@@ -139,6 +197,7 @@ try {
     try {
         await desktop(browser);
         await phone(browser);
+        await english(browser);
         await notFound(browser);
     } finally {
         await browser.close();

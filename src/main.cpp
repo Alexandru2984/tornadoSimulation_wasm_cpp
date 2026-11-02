@@ -28,6 +28,8 @@
 #include <cstddef>
 #include <unordered_set>
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
 
 // For getcwd fallback paths (works on both POSIX & Emscripten)
@@ -45,6 +47,7 @@
 #include "audio_web.h"
 #include "web_bridge.h"
 #include "font5x7.h"
+#include "i18n.h"
 
 // Uniform location caches
 struct MainUniforms {
@@ -570,6 +573,10 @@ extern "C" {
     }
     EMSCRIPTEN_KEEPALIVE void set_reduced_motion(int on) {
         g_reducedMotion = (on != 0);
+    }
+    // HUD language: 0 = Romanian, 1 = English (see i18n.h).
+    EMSCRIPTEN_KEEPALIVE void set_language(int lang) {
+        g_lang = (lang == LANG_EN) ? LANG_EN : LANG_RO;
     }
     EMSCRIPTEN_KEEPALIVE int get_run_stat(int which) {
         return runStat(which);
@@ -2242,23 +2249,23 @@ static void main_loop() {
 
         // ── Top-left: score info ──
         char buf[64];
-        snprintf(buf, sizeof(buf), "SCOR: %d", s.score.scorePoints);
+        snprintf(buf, sizeof(buf), tr(S_SCORE), s.score.scorePoints);
         renderLine(buf, -0.98f, 0.92f, cw, ch, glm::vec3(1.0f, 0.85f, 0.0f));
 
-        snprintf(buf, sizeof(buf), "DISTRUSE: %d", s.score.totalDestroyed);
+        snprintf(buf, sizeof(buf), tr(S_DESTROYED), s.score.totalDestroyed);
         renderLine(buf, -0.98f, 0.86f, scw, sch, glm::vec3(1.0f, 0.9f, 0.3f));
 
-        snprintf(buf, sizeof(buf), "CASE:%d COPACI:%d ALTE:%d",
+        snprintf(buf, sizeof(buf), tr(S_BREAKDOWN),
                  s.score.housesDestroyed, s.score.treesDestroyed, s.score.propsDestroyed);
         renderLine(buf, -0.98f, 0.81f, scw * 0.85f, sch * 0.85f, glm::vec3(0.8f, 0.8f, 0.8f));
 
-        snprintf(buf, sizeof(buf), "TORNADA x%.1f", s.tornadoScale);
+        snprintf(buf, sizeof(buf), tr(S_TORNADO_SCALE), s.tornadoScale);
         renderLine(buf, -0.98f, 0.76f, scw * 0.85f, sch * 0.85f, glm::vec3(1.0f, 0.5f, 0.3f));
 
         // ── Combo multiplier display ──
         if (s.comboCount > 0) {
             float comboPulse = 0.7f + 0.3f * sinf(t * 8.0f);
-            snprintf(buf, sizeof(buf), "COMBO x%d  x%.1f", s.comboCount, s.comboMultiplier);
+            snprintf(buf, sizeof(buf), tr(S_COMBO), s.comboCount, s.comboMultiplier);
             renderLine(buf, -0.98f, 0.70f, scw * 0.85f, sch * 0.85f,
                        glm::vec3(1.0f, 0.4f, 0.1f) * comboPulse);
         }
@@ -2280,7 +2287,7 @@ static void main_loop() {
         // ── Top-right: wave info / Time Attack clock ──
         if (s.timeAttack) {
             int secs = (int)ceilf(s.timeAttackRemaining);
-            snprintf(buf, sizeof(buf), "TIMP %d:%02d  EF%d", secs / 60, secs % 60, s.wave.efScale);
+            snprintf(buf, sizeof(buf), tr(S_TA_CLOCK), secs / 60, secs % 60, s.wave.efScale);
             // Red pulse in the final 10 seconds
             glm::vec3 clockCol = (secs <= 10)
                 ? glm::vec3(1.0f, 0.3f, 0.2f) * (0.6f + 0.4f * sinf(t * 8.0f))
@@ -2295,10 +2302,10 @@ static void main_loop() {
                        glm::vec3(1.0f, 0.7f, 0.2f));
         } else {
             if (s.endlessMode)
-                snprintf(buf, sizeof(buf), "VAL %d  EF%d  INFINIT",
+                snprintf(buf, sizeof(buf), tr(S_WAVE_ENDLESS),
                          s.wave.number, s.wave.efScale);
             else
-                snprintf(buf, sizeof(buf), "VAL %d/%d  EF%d",
+                snprintf(buf, sizeof(buf), tr(S_WAVE_OF),
                          s.wave.number, TOTAL_WAVES, s.wave.efScale);
             renderLine(buf, 0.52f, 0.92f, cw, ch, glm::vec3(0.5f, 0.9f, 1.0f));
 
@@ -2321,12 +2328,12 @@ static void main_loop() {
             const char* name = "";
             glm::vec3 puCol(1.0f);
             switch (ap.type) {
-                case PowerUpType::SPEED_BOOST: name = "SPEED"; puCol = glm::vec3(0.2f, 1.0f, 0.3f); break;
-                case PowerUpType::SIZE_DOUBLE: name = "SIZE x2"; puCol = glm::vec3(1.0f, 0.3f, 0.8f); break;
-                case PowerUpType::MAGNET:      name = "MAGNET"; puCol = glm::vec3(0.3f, 0.5f, 1.0f); break;
-                case PowerUpType::SHIELD:      name = "SHIELD"; puCol = glm::vec3(1.0f, 0.9f, 0.2f); break;
-                case PowerUpType::SCORE_2X:    name = "SCOR x2"; puCol = glm::vec3(1.0f, 0.55f, 0.0f); break;
-                case PowerUpType::FREEZE:      name = "INGHET"; puCol = glm::vec3(0.5f, 0.9f, 1.0f); break;
+                case PowerUpType::SPEED_BOOST: name = tr(S_PU_SPEED); puCol = glm::vec3(0.2f, 1.0f, 0.3f); break;
+                case PowerUpType::SIZE_DOUBLE: name = tr(S_PU_SIZE); puCol = glm::vec3(1.0f, 0.3f, 0.8f); break;
+                case PowerUpType::MAGNET:      name = tr(S_PU_MAGNET); puCol = glm::vec3(0.3f, 0.5f, 1.0f); break;
+                case PowerUpType::SHIELD:      name = tr(S_PU_SHIELD); puCol = glm::vec3(1.0f, 0.9f, 0.2f); break;
+                case PowerUpType::SCORE_2X:    name = tr(S_PU_SCORE); puCol = glm::vec3(1.0f, 0.55f, 0.0f); break;
+                case PowerUpType::FREEZE:      name = tr(S_PU_FREEZE); puCol = glm::vec3(0.5f, 0.9f, 1.0f); break;
             }
             snprintf(buf, sizeof(buf), "%s %.1fs", name, ap.remaining);
             // Flash when about to expire
@@ -2491,7 +2498,7 @@ static void main_loop() {
         if (s.gamePhase == GamePhase::PLAYING && s.minScaleTimer > 0.5f) {
             float remain = GAMEOVER_FADE_TIME * diffFadeMult() - s.minScaleTimer;
             float wPulse = 0.6f + 0.4f * sinf(t * 6.0f);
-            snprintf(buf, sizeof(buf), "TORNADA SLABESTE: %d", (int)ceilf(remain));
+            snprintf(buf, sizeof(buf), tr(S_FADING), (int)ceilf(remain));
             float ww = (float)strlen(buf) * 0.028f;
             renderLine(buf, -ww * 0.5f, 0.55f, 0.028f, 0.056f,
                        glm::vec3(1.0f, 0.25f, 0.15f) * wPulse);
@@ -2505,16 +2512,16 @@ static void main_loop() {
 
             float bigCW = 0.05f, bigCH = 0.1f;
             if (s.timeAttack)
-                snprintf(buf, sizeof(buf), "TIME ATTACK");
+                snprintf(buf, sizeof(buf), "%s", tr(S_TIME_ATTACK));
             else
-                snprintf(buf, sizeof(buf), "VALUL %d", s.wave.number);
+                snprintf(buf, sizeof(buf), tr(S_WAVE_N), s.wave.number);
             float textW = (float)strlen(buf) * bigCW;
             renderLine(buf, -textW * 0.5f, 0.1f, bigCW, bigCH,
                        glm::vec3(0.5f, 0.9f, 1.0f) * alpha);
 
             float smCW = 0.025f, smCH = 0.05f;
             if (s.timeAttack) {
-                const char* sub = "3 MINUTE - SCOR MAXIM";
+                const char* sub = tr(S_TA_SUBTITLE);
                 float stW = (float)strlen(sub) * smCW;
                 renderLine(sub, -stW * 0.5f, -0.02f, smCW, smCH,
                            glm::vec3(1.0f, 0.7f, 0.3f) * alpha);
@@ -2524,12 +2531,12 @@ static void main_loop() {
                     {0.5f,0.9f,0.5f}, {0.8f,0.9f,0.3f}, {1.0f,0.8f,0.2f},
                     {1.0f,0.55f,0.1f}, {1.0f,0.25f,0.05f}, {1.0f,0.1f,0.1f}
                 };
-                snprintf(buf, sizeof(buf), "TORNADA EF%d", s.wave.efScale);
+                snprintf(buf, sizeof(buf), tr(S_EF), s.wave.efScale);
                 float efW = (float)strlen(buf) * 0.032f;
                 renderLine(buf, -efW * 0.5f, 0.03f, 0.032f, 0.064f,
                            EF_COLORS[std::clamp(s.wave.efScale, 0, 5)] * alpha);
 
-                snprintf(buf, sizeof(buf), "DISTRUGE %d OBIECTE", s.wave.target);
+                snprintf(buf, sizeof(buf), tr(S_DESTROY_N), s.wave.target);
                 float stW = (float)strlen(buf) * smCW;
                 renderLine(buf, -stW * 0.5f, -0.05f, smCW, smCH,
                            glm::vec3(0.8f, 0.8f, 0.8f) * alpha);
@@ -2543,14 +2550,14 @@ static void main_loop() {
         };
         auto drawEndStats = [&](float y) {
             float cwv = 0.016f, chv = 0.032f;
-            snprintf(buf, sizeof(buf), "CASE %d  COPACI %d  ALTE %d",
+            snprintf(buf, sizeof(buf), tr(S_END_LINE1),
                      s.score.housesDestroyed, s.score.treesDestroyed, s.score.propsDestroyed);
             centerLine(buf, y, cwv, chv, glm::vec3(0.8f, 0.8f, 0.85f));
-            snprintf(buf, sizeof(buf), "ANIMALE %d  MASINI %d  PASARI %d",
+            snprintf(buf, sizeof(buf), tr(S_END_LINE2),
                      s.score.animalsDestroyed, s.score.vehiclesDestroyed, s.score.birdsDestroyed);
             centerLine(buf, y - 0.045f, cwv, chv, glm::vec3(0.8f, 0.8f, 0.85f));
             int secs = (int)std::max(0.0f, t - s.runStartT);
-            snprintf(buf, sizeof(buf), "COMBO MAX %d   TIMP %d:%02d",
+            snprintf(buf, sizeof(buf), tr(S_END_LINE3),
                      s.maxCombo, secs / 60, secs % 60);
             centerLine(buf, y - 0.09f, cwv, chv, glm::vec3(1.0f, 0.6f, 0.3f));
         };
@@ -2563,30 +2570,30 @@ static void main_loop() {
                        glm::vec3(0.02f, 0.02f, 0.05f), 0.88f);
 
             float bigCW = 0.055f, bigCH = 0.11f;
-            const char* victoryText = s.timeAttack ? "TIMP EXPIRAT" : "VICTORIE";
+            const char* victoryText = s.timeAttack ? tr(S_TIME_UP) : tr(S_VICTORY);
             float pulse = 0.7f + 0.3f * sinf(t * 3.0f);
             centerLine(victoryText, 0.34f, bigCW, bigCH, glm::vec3(1.0f, 0.85f, 0.0f) * pulse);
 
             float smCW = 0.02f, smCH = 0.04f;
-            if (s.timeAttack) snprintf(buf, sizeof(buf), "TIME ATTACK - 3 MINUTE");
-            else snprintf(buf, sizeof(buf), "TOATE CELE %d VALURI COMPLETE", TOTAL_WAVES);
+            if (s.timeAttack) snprintf(buf, sizeof(buf), "%s", tr(S_TA_3MIN));
+            else snprintf(buf, sizeof(buf), tr(S_ALL_WAVES), TOTAL_WAVES);
             centerLine(buf, 0.26f, smCW * 0.85f, smCH * 0.85f, glm::vec3(0.7f, 0.9f, 1.0f));
 
-            snprintf(buf, sizeof(buf), "SCOR: %d", s.score.scorePoints);
+            snprintf(buf, sizeof(buf), tr(S_SCORE), s.score.scorePoints);
             centerLine(buf, 0.18f, smCW, smCH, glm::vec3(1.0f, 0.9f, 0.2f));
 
             drawEndStats(0.10f);
 
-            snprintf(buf, sizeof(buf), "TORNADA MAX x%.1f   RECORD %d",
+            snprintf(buf, sizeof(buf), tr(S_MAX_AND_BEST),
                      s.tornadoScale, getHighScore());
             centerLine(buf, -0.07f, smCW * 0.8f, smCH * 0.8f, glm::vec3(1.0f, 0.7f, 0.3f));
 
             if (s.victoryTimer > 1.5f) {
                 float blink = (sinf(t * 4.0f) > 0.0f) ? 1.0f : 0.3f;
-                centerLine("APASA C = COPIAZA   R = RESTART", -0.18f,
+                centerLine(tr(S_PRESS_C_R), -0.18f,
                            smCW * 0.72f, smCH * 0.72f, glm::vec3(0.5f, 0.9f, 0.9f) * blink);
                 if (!s.timeAttack)
-                    centerLine("APASA E = MOD INFINIT", -0.26f,
+                    centerLine(tr(S_PRESS_E), -0.26f,
                                smCW * 0.72f, smCH * 0.72f, glm::vec3(0.9f, 0.6f, 1.0f) * blink);
             }
         }
@@ -2599,24 +2606,24 @@ static void main_loop() {
                         glm::vec3(0.06f, 0.02f, 0.02f), 0.88f);
 
             float bigCW = 0.055f, bigCH = 0.11f;
-            centerLine("GAME OVER", 0.34f, bigCW, bigCH, glm::vec3(1.0f, 0.25f, 0.2f));
+            centerLine(tr(S_GAME_OVER), 0.34f, bigCW, bigCH, glm::vec3(1.0f, 0.25f, 0.2f));
 
             float smCW = 0.02f, smCH = 0.04f;
-            centerLine("TORNADA S-A RISIPIT", 0.26f, smCW * 0.85f, smCH * 0.85f,
+            centerLine(tr(S_DISSIPATED), 0.26f, smCW * 0.85f, smCH * 0.85f,
                        glm::vec3(0.8f, 0.7f, 0.7f));
 
-            snprintf(buf, sizeof(buf), "SCOR: %d", s.score.scorePoints);
+            snprintf(buf, sizeof(buf), tr(S_SCORE), s.score.scorePoints);
             centerLine(buf, 0.18f, smCW, smCH, glm::vec3(1.0f, 0.9f, 0.2f));
 
             drawEndStats(0.10f);
 
-            snprintf(buf, sizeof(buf), "VAL ATINS %d/%d   RECORD %d",
+            snprintf(buf, sizeof(buf), tr(S_WAVE_REACHED),
                      s.wave.number, TOTAL_WAVES, getHighScore());
             centerLine(buf, -0.07f, smCW * 0.8f, smCH * 0.8f, glm::vec3(0.7f, 0.85f, 1.0f));
 
             if (s.victoryTimer > 1.5f) {
                 float blink = (sinf(t * 4.0f) > 0.0f) ? 1.0f : 0.3f;
-                centerLine("APASA R PENTRU RESTART", -0.18f, smCW, smCH,
+                centerLine(tr(S_PRESS_R), -0.18f, smCW, smCH,
                            glm::vec3(0.6f, 0.8f, 0.6f) * blink);
             }
         }
@@ -2687,6 +2694,14 @@ static void main_loop() {
 // main() — one-time setup, then enter loop
 // ═════════════════════════════════════════════════════════════════════
 int main() {
+#ifndef PLATFORM_EMSCRIPTEN
+    // Desktop: HUD language from the locale (the web page calls set_language).
+    static const char* const kLocaleVars[] = {"LC_ALL", "LC_MESSAGES", "LANG"};
+    for (const char* var : kLocaleVars) {
+        const char* v = std::getenv(var);
+        if (v && *v) { g_lang = (std::strncmp(v, "ro", 2) == 0) ? LANG_RO : LANG_EN; break; }
+    }
+#endif
     if (!glfwInit()) { std::cerr << "glfwInit failed\n"; return -1; }
 
 #ifdef PLATFORM_EMSCRIPTEN

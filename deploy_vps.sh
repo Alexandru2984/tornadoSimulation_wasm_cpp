@@ -75,8 +75,11 @@ smoke_test() {
     page="$(fetch / )" || { echo "GET / failed"; return 1; }
     grep -q "\"build\":\"${build}\"" <<<"$page" || { echo "live page is not build ${build}"; return 1; }
     info="$(grep -o '<script id="build-info"[^<]*' <<<"$page" | sed 's/.*>//')"
-    local f
-    for f in $(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["js"], d["wasm"], d["data"])' "$info"); do
+    local f page_assets
+    # Engine files from build-info, plus the hashed scripts/stylesheet the page links.
+    page_assets="$(grep -o '\(src\|href\)="[a-z0-9]*\.[0-9a-f]\{10\}\.\(js\|css\)"' <<<"$page" | sed 's/.*="//; s/"$//')"
+    [ "$(wc -w <<<"$page_assets")" -ge 3 ] || { echo "page links fewer hashed assets than expected"; return 1; }
+    for f in $(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["js"], d["wasm"], d["data"])' "$info") $page_assets; do
         fetch "/$f" -o /dev/null || { echo "GET /$f failed"; return 1; }
     done
     fetch "/$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["wasm"])' "$info")" -o /dev/null -w '%{content_type}' \
@@ -198,7 +201,7 @@ cmd_deploy() {
     log "running tests"
     ctest --test-dir "$BUILD_DIR" --output-on-failure
     local t
-    for t in server/test_leaderboard.py server/test_lbadmin.py tools/test_package_site.py; do
+    for t in server/test_leaderboard.py server/test_lbadmin.py tools/test_package_site.py tools/test_i18n.py; do
         python3 "$t" >/dev/null 2>&1 || python3 "$t" || die "$t failed"
     done
     ok "tests passed"

@@ -42,8 +42,10 @@ jobs:
         run: python server/test_lbadmin.py
       - name: Site packaging tests
         run: python tools/test_package_site.py
+      - name: English dictionary covers the page
+        run: python tools/test_i18n.py
       - name: Byte-compile tools
-        run: python -m py_compile tools/dev_server.py tools/package_site.py server/leaderboard.py server/lbadmin.py
+        run: python -m py_compile tools/dev_server.py tools/package_site.py tools/test_i18n.py server/leaderboard.py server/lbadmin.py
 
   lint:
     name: Lint (shell, JS, JSON)
