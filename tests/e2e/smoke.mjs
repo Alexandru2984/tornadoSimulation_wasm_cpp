@@ -81,7 +81,14 @@ async function desktop(browser) {
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('tornado:runend', { detail: { outcome: 1 } })));
     await page.waitForSelector('#dlg-end[open]', { timeout: 5000 });
     check(true, 'run end shows the results dialog');
+    const chips = await page.$$eval('#end-unlocks .chip-gold', els => els.map(e => e.textContent));
+    check(chips.includes('Prima furtună'), 'first finished run unlocks an achievement in the results dialog');
     await page.click('#btn-end-menu');
+
+    await page.click('#btn-profile');
+    await page.waitForSelector('#dlg-profile[open]', { timeout: 5000 });
+    check(/^1 \/ \d+$/.test((await page.textContent('#ach-count')).trim()), 'profile lists 1 unlocked achievement');
+    await page.keyboard.press('Escape');
 
     await page.click('#btn-scores');
     await page.waitForSelector('#dlg-scores[open]', { timeout: 5000 });

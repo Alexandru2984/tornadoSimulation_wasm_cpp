@@ -23,6 +23,8 @@ Emscripten/WASM). Live at **https://tornado.micutu.com**.
 - Pause on tab switch, wake lock while playing, fullscreen + landscape lock
 - Global leaderboard (classic / time attack × difficulty × all-time / month / week / day),
   local history, score sharing, portable player profile code
+- Player profile: lifetime statistics and 21 achievements (per run, cumulative, streaks,
+  leaderboard placings), unlocked live on the results screen
 - Installable app (manifest, icons) that also plays offline after the first visit
 - SEO: canonical URL, Open Graph / X preview card, JSON-LD, sitemap, robots, real 404
 

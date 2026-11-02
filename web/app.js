@@ -59,7 +59,7 @@
 
     var KEYS = {
         settings: 'tornado3d_settings', scores: 'tornado3d_scores', name: 'tornado3d_name',
-        player: 'tornado3d_player', tutorial: 'tornado3d_seen_tutorial'
+        player: 'tornado3d_player', tutorial: 'tornado3d_seen_tutorial', profile: 'tornado3d_profile'
     };
 
     function toast(msg, ms) {
@@ -478,15 +478,210 @@
         return st.score > best;
     }
 
+    // ── Profile: lifetime stats + achievements (this device only) ─────
+    var COUNTERS = ['houses', 'trees', 'props', 'animals', 'vehicles', 'birds', 'destroyed'];
+    function total(key, goal) { return function (s, p) { return p[key] >= goal; }; }
+    function count(key, goal) { return function (p) { return [p[key], goal]; }; }
+    var ACHIEVEMENTS = [
+        { id: 'first', title: 'Prima furtună', desc: 'Termină prima rundă.', test: total('runs', 1) },
+        { id: 'wave5', title: 'Uragan în formare', desc: 'Ajungi la valul 5 în modul clasic.',
+          test: function (s) { return s.mode === 0 && s.wave >= 5; } },
+        { id: 'victory', title: 'Forța naturii', desc: 'Termini toate cele 10 valuri.',
+          test: function (s) { return s.mode === 0 && s.outcome === OUTCOME.VICTORY; } },
+        { id: 'victory_hard', title: 'Apocalipsă', desc: 'Câștigi pe dificultatea Greu.',
+          test: function (s) { return s.mode === 0 && s.outcome === OUTCOME.VICTORY && s.difficulty === 2; } },
+        { id: 'endless15', title: 'Fără sfârșit', desc: 'Ajungi la valul 15 în modul infinit.',
+          test: function (s) { return s.mode === 0 && s.wave >= 15; } },
+        { id: 'combo10', title: 'Lanț de distrugeri', desc: 'Faci un combo de 10.',
+          test: function (s) { return s.maxCombo >= 10; } },
+        { id: 'combo25', title: 'Reacție în lanț', desc: 'Faci un combo de 25.',
+          test: function (s) { return s.maxCombo >= 25; } },
+        { id: 'ta10k', title: 'Contra cronometru', desc: '10.000 de puncte în Time Attack.',
+          test: function (s) { return s.mode === 1 && s.score >= 10000; } },
+        { id: 'ta25k', title: 'Fulger', desc: '25.000 de puncte în Time Attack.',
+          test: function (s) { return s.mode === 1 && s.score >= 25000; } },
+        { id: 'score50k', title: 'Record de furtună', desc: '50.000 de puncte într-o rundă clasică.',
+          test: function (s) { return s.mode === 0 && s.score >= 50000; } },
+        { id: 'houses100', title: 'Demolator', desc: '100 de case distruse în total.',
+          test: total('houses', 100), progress: count('houses', 100) },
+        { id: 'trees250', title: 'Defrișare', desc: '250 de copaci doborâți în total.',
+          test: total('trees', 250), progress: count('trees', 250) },
+        { id: 'cars50', title: 'Parcare goală', desc: '50 de mașini luate pe sus.',
+          test: total('vehicles', 50), progress: count('vehicles', 50) },
+        { id: 'animals50', title: 'Ferma zburătoare', desc: '50 de animale prinse în vârtej.',
+          test: total('animals', 50), progress: count('animals', 50) },
+        { id: 'birds25', title: 'Prin nori', desc: '25 de păsări prinse în zbor.',
+          test: total('birds', 25), progress: count('birds', 25) },
+        { id: 'destroy1k', title: 'O mie de bucăți', desc: '1.000 de obiecte distruse în total.',
+          test: total('destroyed', 1000), progress: count('destroyed', 1000) },
+        { id: 'destroy10k', title: 'Cataclism', desc: '10.000 de obiecte distruse în total.',
+          test: total('destroyed', 10000), progress: count('destroyed', 10000) },
+        { id: 'runs25', title: 'Vânător de furtuni', desc: '25 de runde jucate.',
+          test: total('runs', 25), progress: count('runs', 25) },
+        { id: 'streak3', title: 'Sezonul uraganelor', desc: 'Joci 3 zile la rând.',
+          test: total('streak', 3), progress: count('streak', 3) },
+        { id: 'global', title: 'Pe hartă', desc: 'Trimiți un scor în clasamentul global.' },
+        { id: 'top10', title: 'Top 10', desc: 'Intri în primii 10 ai unui clasament global.' }
+    ];
+
+    function localDay(d) {
+        d = d || new Date();
+        return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+    }
+    function dayNumber(iso) {
+        var p = String(iso).split('-');
+        return Math.round(Date.UTC(+p[0], +p[1] - 1, +p[2]) / 86400000);
+    }
+    function loadProfile() {
+        var p = store.get(KEYS.profile, null);
+        if (!p || typeof p !== 'object') p = {};
+        var base = { runs: 0, playSeconds: 0, bestClassic: 0, bestTimeAttack: 0, bestWave: 0, bestCombo: 0,
+                     victories: 0, streak: 0, firstDay: '', lastDay: '', unlocked: {} };
+        COUNTERS.forEach(function (k) { base[k] = 0; });
+        Object.keys(base).forEach(function (k) {
+            if (k === 'unlocked' ? typeof p[k] !== 'object' || !p[k]
+                                 : typeof p[k] !== typeof base[k]) p[k] = base[k];
+        });
+        return p;
+    }
+
+    function unlock(p, id) {
+        if (p.unlocked[id]) return false;
+        p.unlocked[id] = localDay();
+        return true;
+    }
+
+    // Adds a finished run to the profile and returns newly unlocked achievements.
+    // After a victory the same run can continue in endless mode and end again,
+    // so only what changed since the last report of this run is counted.
+    function recordRun(st) {
+        var p = loadProfile();
+        var run = state.run;
+        var prev = run && run.recorded;
+        function delta(k) { return Math.max(0, (st[k] | 0) - (prev ? prev[k] | 0 : 0)); }
+        if (!prev) p.runs++;
+        p.playSeconds += delta('time');
+        COUNTERS.forEach(function (k) { p[k] += delta(k); });
+        if (st.mode === 0) {
+            p.bestClassic = Math.max(p.bestClassic, st.score);
+            p.bestWave = Math.max(p.bestWave, st.wave);
+        } else {
+            p.bestTimeAttack = Math.max(p.bestTimeAttack, st.score);
+        }
+        p.bestCombo = Math.max(p.bestCombo, st.maxCombo);
+        if (st.outcome === OUTCOME.VICTORY) p.victories++;
+
+        var today = localDay();
+        if (p.lastDay !== today) {
+            p.streak = p.lastDay && dayNumber(today) - dayNumber(p.lastDay) === 1 ? p.streak + 1 : 1;
+            p.lastDay = today;
+        }
+        if (!p.firstDay) p.firstDay = today;
+        if (run) run.recorded = st;
+
+        var fresh = ACHIEVEMENTS.filter(function (a) { return a.test && a.test(st, p) && unlock(p, a.id); });
+        store.set(KEYS.profile, p);
+        return fresh;
+    }
+
+    // Achievements earned outside a run end (leaderboard results).
+    function unlockLater(ids) {
+        var p = loadProfile();
+        var fresh = ACHIEVEMENTS.filter(function (a) { return ids.indexOf(a.id) >= 0 && unlock(p, a.id); });
+        if (!fresh.length) return;
+        store.set(KEYS.profile, p);
+        showUnlocks(fresh, true);
+    }
+
+    function showUnlocks(list, append) {
+        var box = $('#end-unlocks');
+        if (!append) box.textContent = '';
+        list.forEach(function (a) {
+            var chip = document.createElement('span');
+            chip.className = 'chip-gold';
+            chip.title = a.desc;
+            chip.appendChild(svgIcon('i-medal'));
+            chip.appendChild(document.createTextNode(a.title));
+            box.appendChild(chip);
+        });
+        box.hidden = !box.childNodes.length;
+        if (list.length && !$('#dlg-end').open) toast('Realizare deblocată: ' + list[0].title);
+    }
+
+    function svgIcon(id) {
+        var ns = 'http://www.w3.org/2000/svg';
+        var svg = document.createElementNS(ns, 'svg');
+        svg.setAttribute('class', 'icon');
+        svg.setAttribute('aria-hidden', 'true');
+        var use = document.createElementNS(ns, 'use');
+        use.setAttribute('href', '#' + id);
+        svg.appendChild(use);
+        return svg;
+    }
+
+    function fmtDuration(sec) {
+        var h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60);
+        return h ? h + ' h ' + m + ' min' : m + ' min';
+    }
+
+    function renderProfile() {
+        var p = loadProfile();
+        $('#profile-since').textContent = p.firstDay
+            ? 'Joci din ' + p.firstDay + (playerName() ? ' · în clasament ca ' + playerName() : '')
+            : 'Încă nu ai terminat nicio rundă. Statisticile apar după prima.';
+        var items = [
+            ['Runde', p.runs], ['Timp de joc', fmtDuration(p.playSeconds)], ['Victorii', p.victories],
+            ['Obiecte distruse', p.destroyed], ['Case', p.houses], ['Copaci', p.trees],
+            ['Mașini', p.vehicles], ['Animale', p.animals], ['Păsări', p.birds],
+            ['Record clasic', p.bestClassic], ['Record Time Attack', p.bestTimeAttack],
+            ['Val maxim', p.bestWave], ['Combo maxim', '×' + p.bestCombo], ['Zile la rând', p.streak]
+        ];
+        var grid = $('#profile-stats');
+        grid.textContent = '';
+        items.forEach(function (it) {
+            var box = document.createElement('div');
+            var dt = document.createElement('dt'); dt.textContent = it[0];
+            var dd = document.createElement('dd'); dd.textContent = typeof it[1] === 'number' ? fmt(it[1]) : it[1];
+            box.appendChild(dt); box.appendChild(dd); grid.appendChild(box);
+        });
+
+        var list = $('#ach-list');
+        list.textContent = '';
+        var done = 0;
+        ACHIEVEMENTS.forEach(function (a) {
+            var when = p.unlocked[a.id];
+            if (when) done++;
+            var li = document.createElement('li');
+            li.className = 'ach' + (when ? ' done' : '');
+            li.appendChild(svgIcon(when ? 'i-medal' : 'i-lock'));
+            var b = document.createElement('b'); b.textContent = a.title; li.appendChild(b);
+            var side = document.createElement('span'); side.className = 'prog';
+            if (when) side.textContent = when;
+            else if (a.progress) { var pr = a.progress(p); side.textContent = fmt(Math.min(pr[0], pr[1])) + '/' + fmt(pr[1]); }
+            li.appendChild(side);
+            var small = document.createElement('small'); small.textContent = a.desc; li.appendChild(small);
+            li.setAttribute('aria-label', a.title + ': ' + a.desc + (when ? ' — deblocată' : ' — blocată'));
+            list.appendChild(li);
+        });
+        $('#ach-count').textContent = done + ' / ' + ACHIEVEMENTS.length;
+    }
+
+    function openProfile() {
+        renderProfile();
+        showDialog('dlg-profile');
+    }
+
     window.addEventListener('tornado:runend', function (e) {
         var outcome = e.detail.outcome | 0;
         var st = readStats();
         st.outcome = outcome;
         state.lastEnd = st;
         var record = saveLocal(st);
+        var unlocked = recordRun(st);
         releaseWakeLock();
         renderEnd(st, record);
         showDialog('dlg-end');
+        showUnlocks(unlocked, false);     // after opening: shown in the dialog, no toast
 
         var canContinue = outcome === OUTCOME.VICTORY && st.mode === 0;
         var name = playerName();
@@ -573,6 +768,7 @@
                 setSubmitUi('done', 'Trimis! Locul #' + res.body.rank + ' în clasamentul ' +
                     MODE_LABELS[st.mode] + ' · ' + DIFF_LABELS[st.difficulty] + '.', 'ok');
                 scoresCache = {};
+                unlockLater(res.body.rank <= 10 ? ['global', 'top10'] : ['global']);
             } else if (res.status === 409 && err === 'name taken') {
                 setSubmitUi('ready', 'Numele este rezervat de alt jucător. Alege altul.', 'err');
                 $('#end-name').focus();
@@ -823,8 +1019,9 @@
         toast('Profil importat');
     });
     $('#btn-clear-data').addEventListener('click', function () {
-        if (!confirm('Ștergi scorurile locale și setările de pe acest dispozitiv? Codul de profil rămâne.')) return;
-        [KEYS.settings, KEYS.scores, KEYS.tutorial].forEach(store.remove);
+        if (!confirm('Ștergi scorurile locale, statisticile, realizările și setările de pe acest dispozitiv? ' +
+                     'Codul de profil (numele rezervat) rămâne.')) return;
+        [KEYS.settings, KEYS.scores, KEYS.tutorial, KEYS.profile].forEach(store.remove);
         Object.keys(defaults).forEach(function (k) { settings[k] = defaults[k]; });
         applyAll();
         toast('Datele locale au fost șterse');
@@ -835,6 +1032,7 @@
     $('#btn-play').addEventListener('click', function () { startRun(0); });
     $('#btn-timeattack').addEventListener('click', function () { startRun(1); });
     $('#btn-scores').addEventListener('click', openScores);
+    $('#btn-profile').addEventListener('click', openProfile);
     $('#btn-hud-scores').addEventListener('click', openScores);
     $('#btn-help').addEventListener('click', function () { showDialog('dlg-help'); });
     $('#btn-settings').addEventListener('click', function () { syncSettingsUi(); showDialog('dlg-settings'); });

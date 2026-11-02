@@ -292,6 +292,34 @@ body.in-run .screen-start { display: none; }
 .stat-grid dt { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .stat-grid dd { margin: 2px 0 0; font-size: 1.1rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 
+/* Achievements (profile dialog + end-of-run strip) */
+.end-unlocks { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin: -4px 0 14px; }
+.chip-gold {
+    display: inline-flex; align-items: center; gap: 0.35em; padding: 0.25em 0.75em; border-radius: 999px;
+    font-size: 0.8rem; font-weight: 700; color: var(--gold);
+    background: rgba(255, 200, 80, 0.12); border: 1px solid rgba(255, 200, 80, 0.5);
+    animation: toast-in 0.3s ease-out;
+}
+.chip-gold .icon { width: 1.1em; height: 1.1em; }
+#profile-stats { grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); }
+.ach-head { display: flex; justify-content: space-between; align-items: baseline; margin: 4px 0 10px; }
+.ach-head h3 { font-size: 1.05rem; }
+.ach-list {
+    list-style: none; margin: 0 0 12px; padding: 0;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px;
+}
+.ach {
+    display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 0 10px;
+    padding: 8px 10px; border-radius: var(--radius-sm); background: var(--panel-2); border: 1px solid var(--line);
+}
+.ach > .icon { grid-row: span 2; width: 26px; height: 26px; color: var(--muted); opacity: 0.7; }
+.ach b { font-size: 0.9rem; line-height: 1.25; color: var(--muted); }
+.ach small { grid-column: 2 / -1; font-size: 0.76rem; line-height: 1.3; color: var(--muted); }
+.ach .prog { font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ach.done { background: rgba(255, 200, 80, 0.07); border-color: rgba(255, 200, 80, 0.4); }
+.ach.done > .icon { color: var(--gold); opacity: 1; }
+.ach.done b { color: var(--text); }
+
 .submit-box { padding: 12px; border-radius: var(--radius-sm); background: rgba(92, 200, 255, 0.06); border: 1px solid var(--line); margin-bottom: 14px; }
 .submit-box label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; }
 .row { display: flex; gap: 8px; }
@@ -406,7 +434,7 @@ body.touch .only-desktop, body:not(.touch) .only-touch { display: none; }
     #dlg-end[open] {
         display: grid; column-gap: 16px; align-items: start;
         grid-template-columns: 1.15fr 1fr;
-        grid-template-areas: "head head" "score submit" "stats submit" "stats actions";
+        grid-template-areas: "head head" "score submit" "stats submit" "stats actions" "unlocks actions";
     }
     #dlg-end .end-head { grid-area: head; }
     #dlg-end .end-head h2 { font-size: 1.3rem; }
@@ -417,6 +445,7 @@ body.touch .only-desktop, body:not(.touch) .only-touch { display: none; }
     #dlg-end .stat-grid dt { font-size: 0.62rem; }
     #dlg-end .stat-grid dd { font-size: 0.95rem; }
     #dlg-end .submit-box { grid-area: submit; margin: 6px 0 8px; }
+    #dlg-end .end-unlocks { grid-area: unlocks; justify-content: flex-start; margin: 8px 0 0; }
     #dlg-end .actions { grid-area: actions; grid-template-columns: 1fr 1fr; }
 }
 

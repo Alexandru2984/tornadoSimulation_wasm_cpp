@@ -85,6 +85,9 @@
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="13" r="7.5"/><path d="M12 9.5V13l2.5 2M9.5 2.5h5"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/></symbol>
     <symbol id="i-infinity" viewBox="0 0 24 24"><path d="M7 15.5a3.5 3.5 0 1 1 0-7c3 0 7 7 10 7a3.5 3.5 0 1 0 0-7c-3 0-7 7-10 7z"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></symbol>
+    <symbol id="i-medal" viewBox="0 0 24 24"><path d="M8 3h8l-2.2 5.2M10.2 8.2 8 3"/><circle cx="12" cy="14.5" r="5.5"/><path d="m12 11.8.9 1.8 2 .3-1.45 1.4.35 2-1.8-.95-1.8.95.35-2-1.45-1.4 2-.3z"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5.5" y="10.5" width="13" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
     <symbol id="i-tornado" viewBox="0 0 24 24"><path d="M3 5h18M5 9h13M8 13h9M10 17h5M12 21h1.5"/></symbol>
 </svg>
 
@@ -155,6 +158,7 @@
 
             <nav class="start-links" aria-label="Meniu">
                 <button class="btn btn-ghost" id="btn-scores" type="button"><svg class="icon"><use href="#i-trophy"/></svg> Clasament</button>
+                <button class="btn btn-ghost" id="btn-profile" type="button"><svg class="icon"><use href="#i-user"/></svg> Profil</button>
                 <button class="btn btn-ghost" id="btn-help" type="button"><svg class="icon"><use href="#i-help"/></svg> Cum se joacă</button>
                 <button class="btn btn-ghost" id="btn-settings" type="button"><svg class="icon"><use href="#i-gear"/></svg> Setări</button>
                 <button class="btn btn-ghost" id="btn-install" type="button" hidden><svg class="icon"><use href="#i-download"/></svg> Instalează</button>
@@ -196,7 +200,7 @@
             </details>
             <details>
                 <summary>Ce date salvați?</summary>
-                <p>Nu folosim cookie-uri. Setările și scorurile locale rămân în browserul tău. În clasamentul global ajung doar numele pe care îl alegi, scorul și statisticile rundei. Traficul este măsurat agregat, fără cookie-uri, prin Cloudflare Web Analytics.</p>
+                <p>Nu folosim cookie-uri. Setările, scorurile locale, statisticile și realizările rămân în browserul tău. În clasamentul global ajung doar numele pe care îl alegi, scorul și statisticile rundei. Traficul este măsurat agregat, fără cookie-uri, prin Cloudflare Web Analytics.</p>
             </details>
             <details>
                 <summary>Cum îmi păstrez numele pe alt dispozitiv?</summary>
@@ -250,6 +254,7 @@
         <span class="badge" id="end-record" hidden>Record nou!</span>
     </div>
     <dl class="stat-grid" id="end-stats"></dl>
+    <div class="end-unlocks" id="end-unlocks" aria-live="polite" hidden></div>
 
     <form class="submit-box" id="submit-form" novalidate>
         <label for="end-name">Numele tău în clasament</label>
@@ -304,6 +309,21 @@
     </div>
 </dialog>
 
+<dialog id="dlg-profile" class="dialog wide" aria-labelledby="profile-title">
+    <div class="dialog-head">
+        <h2 id="profile-title">Profil</h2>
+        <button class="icon-btn" type="button" data-close aria-label="Închide"><svg class="icon"><use href="#i-close"/></svg></button>
+    </div>
+    <p class="hint" id="profile-since"></p>
+    <dl class="stat-grid" id="profile-stats"></dl>
+    <div class="ach-head">
+        <h3>Realizări</h3>
+        <span class="muted" id="ach-count"></span>
+    </div>
+    <ul class="ach-list" id="ach-list"></ul>
+    <p class="hint">Statisticile și realizările sunt păstrate doar pe acest dispozitiv.</p>
+</dialog>
+
 <dialog id="dlg-settings" class="dialog" aria-labelledby="settings-title">
     <div class="dialog-head">
         <h2 id="settings-title">Setări</h2>
@@ -350,7 +370,7 @@
                 <input id="profile-import" aria-label="Importă un cod de profil" placeholder="Lipește un cod de profil" spellcheck="false" autocomplete="off">
                 <button class="btn" id="btn-import-profile" type="button">Importă</button>
             </div>
-            <button class="btn btn-danger" id="btn-clear-data" type="button">Șterge scorurile locale și setările</button>
+            <button class="btn btn-danger" id="btn-clear-data" type="button">Șterge datele locale (scoruri, profil, setări)</button>
         </details>
     </div>
 </dialog>
