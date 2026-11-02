@@ -743,7 +743,11 @@
         fetch(API + '/stats', { credentials: 'same-origin' })
             .then(function (r) { if (!r.ok) throw r.status; return r.json(); })
             .then(function (s) {
-                if (!s || !s.scores) return;
+                if (!s) return;
+                if (!s.scores) {
+                    $('#global-stats').textContent = 'Clasamentul global e gol — primul scor trimis ia locul 1.';
+                    return;
+                }
                 var parts = [];
                 if (s.houses) parts.push(fmt(s.houses) + ' case');
                 if (s.vehicles) parts.push(fmt(s.vehicles) + ' mașini');

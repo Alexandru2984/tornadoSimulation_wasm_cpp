@@ -57,6 +57,6 @@ __pycache__/
 *.pyc
 
 # Local tooling
-/node_modules/
+node_modules/
 /test-results/
 /.cache/

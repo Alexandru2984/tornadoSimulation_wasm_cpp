@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only token: CI builds and tests; deploying happens on the VPS
+# (deploy_vps.sh), never from here.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Same Emscripten as the production build.
+  EMSDK_VERSION: "6.0.13"
+
+# Third-party actions are pinned to full commit SHAs (tags can be moved);
+# Dependabot keeps the pins current.
+jobs:
+  python:
+    name: Python ${{ matrix.python }} (leaderboard, packaging)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Leaderboard API tests
+        run: python server/test_leaderboard.py
+      - name: Site packaging tests
+        run: python tools/test_package_site.py
+      - name: Byte-compile tools
+        run: python -m py_compile tools/dev_server.py tools/package_site.py server/leaderboard.py
+
+  lint:
+    name: Lint (shell, JS, JSON)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: shellcheck deploy_vps.sh build_wasm.sh server/backup_scores.sh
+      - name: JavaScript syntax
+        run: for f in web/*.js tests/e2e/*.mjs; do node --check "$f"; done
+      - name: JSON files
+        run: |
+          python3 -c 'import json,sys; [json.load(open(f)) for f in sys.argv[1:]]' \
+            web/manifest.webmanifest tests/e2e/package.json
+
+  native:
+    name: Native build (Linux, OpenGL 3.3)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: X11 / OpenGL headers for GLFW
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xorg-dev libgl-dev
+      - name: Configure
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  wasm:
+    name: WebAssembly build + site package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mymindstorm/setup-emsdk@4528d102f7230f0e7b276855c01ea1159be0e984 # v16
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+          actions-cache-folder: emsdk-cache
+      - name: Configure
+        run: emcmake cmake -B build-wasm -S . -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build-wasm -j"$(nproc)"
+      - name: Unit tests (node)
+        run: ctest --test-dir build-wasm --output-on-failure
+      - name: Package (hashed assets, same as deploy)
+        run: python3 tools/package_site.py --version "${GITHUB_SHA::7}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  browser:
+    name: Browser smoke test (Chromium + SwiftShader)
+    needs: wasm
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: site
+          path: dist
+      - name: Install Playwright (locked)
+        working-directory: tests/e2e
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Smoke test under the production CSP
+        working-directory: tests/e2e
+        run: node smoke.mjs ../../dist
