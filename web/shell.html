@@ -464,6 +464,9 @@
                 difficulty = d;
                 document.getElementById('btn-difficulty').textContent = difficultyLabels[d];
                 if (Module._set_difficulty) Module._set_difficulty(d);
+                // The game waits in its attract-mode menu; start a classic run
+                // once main() has run (onRuntimeInitialized fires before it).
+                setTimeout(function() { if (Module._start_run) Module._start_run(0); }, 0);
                 // First-time players get the tutorial (defined in the next script block)
                 if (typeof maybeShowTutorial === 'function') maybeShowTutorial();
             },
@@ -853,6 +856,7 @@
             if (e.code === 'KeyP' || (e.code === 'Escape' && !document.fullscreenElement))
                 document.getElementById('btn-pause').click();
             if (e.code === 'KeyM') document.getElementById('btn-mute').click();
+            if (e.code === 'KeyE' && Module._continue_endless) Module._continue_endless();
             if (e.code === 'KeyR') {
                 // Instant restart on victory/game-over; mid-game requires a
                 // double press so an accidental R doesn't wipe the run
@@ -922,6 +926,19 @@
         window.addEventListener('touchend', unlockAudio);
         window.addEventListener('click', unlockAudio);
         window.addEventListener('keydown', unlockAudio);
+
+        // Run finished: keep the local top 10 (the game no longer does this)
+        window.addEventListener('tornado:runend', function() {
+            if (!Module._get_run_stat) return;
+            var score = Module._get_run_stat(0), wave = Module._get_run_stat(1);
+            if (score <= 0) return;
+            try {
+                var scores = JSON.parse(localStorage.getItem('tornado3d_scores') || '[]');
+                scores.push({score: score, wave: wave, date: new Date().toLocaleDateString()});
+                scores.sort(function(a, b) { return b.score - a.score; });
+                localStorage.setItem('tornado3d_scores', JSON.stringify(scores.slice(0, 10)));
+            } catch (e) {}
+        });
 
         Module.setStatus('Se descarca...');
         window.onerror = function(msg, src, line, col, err) {

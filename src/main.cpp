@@ -43,6 +43,7 @@
 #include "constants.h"
 #include "terrain_noise.h"
 #include "audio_web.h"
+#include "web_bridge.h"
 #include "font5x7.h"
 
 // Uniform location caches
@@ -198,7 +199,8 @@ struct Score {
 };
 
 // Game state machine
-enum class GamePhase { PLAYING, WAVE_ANNOUNCE, VICTORY, GAME_OVER };
+// MENU = attract mode behind the start screen: the world animates, nothing scores.
+enum class GamePhase { PLAYING, WAVE_ANNOUNCE, VICTORY, GAME_OVER, MENU };
 
 // Wave definition
 struct Wave {
@@ -247,6 +249,10 @@ struct AppState {
     Camera camera;
     glm::vec2 tornadoPos{0.0f, 0.0f};
     float startTime = 0.0f;
+    // Game clock: advances only while the simulation runs, so pausing (or a
+    // backgrounded tab) does not eat the decay grace period or inflate the
+    // run time the way the wall clock did.
+    float gameTime = 0.0f;
 
     // Shaders
     GLuint program         = 0;
@@ -415,12 +421,97 @@ static bool  g_touchLookActive = false;
 static int   g_activeParticles = MAX_PARTICLES;  // quality preset control
 static bool  g_paused          = false;
 static int   g_difficulty      = 1;              // 0=easy, 1=normal, 2=hard
+// Difficulty chosen in the UI; applied when the next run starts so it cannot
+// be switched mid-run (e.g. start on Hard for the board, finish on Easy).
+static int   g_pendingDifficulty = 1;
+static bool  g_reducedMotion   = false;          // no camera shake, soft flashes
 
 // Per-difficulty multipliers (index by g_difficulty)
 static float diffDecayMult()   { const float v[3] = {0.6f, 1.0f, 1.5f};  return v[std::clamp(g_difficulty,0,2)]; }
 static float diffDamageMult()  { const float v[3] = {1.3f, 1.0f, 0.85f}; return v[std::clamp(g_difficulty,0,2)]; }
 static float diffFadeMult()    { const float v[3] = {1.5f, 1.0f, 0.7f};  return v[std::clamp(g_difficulty,0,2)]; }
 static float diffPowerupMult() { const float v[3] = {1.4f, 1.0f, 0.7f}; return v[std::clamp(g_difficulty,0,2)]; }
+
+// ── Run lifecycle (shared by the JS exports and the native key handlers) ──
+static void resetRun(bool timeAttack) {
+    auto& s = app;
+    g_difficulty = g_pendingDifficulty;
+    s.score = Score{};
+    s.tornadoScale = 1.0f;
+    s.lastDestroyTime = s.gameTime;
+    s.wave = Wave{};
+    s.wave.target = WAVE_BASE_TARGET;
+    s.gamePhase = GamePhase::WAVE_ANNOUNCE;
+    s.victoryTimer = 0.0f;
+    s.minScaleTimer = 0.0f;
+    s.endlessMode = false;
+    s.timeAttack = timeAttack;
+    s.timeAttackRemaining = timeAttack ? TIME_ATTACK_SECONDS : 0.0f;
+    s.activePowerUps.clear();
+    s.powerUps.clear();
+    s.powerUpSpawnTimer = 5.0f;
+    for (auto& h  : s.houses)      { h.health  = 1.0f; h.destroyed  = false; }
+    for (auto& tr : s.chunkTrees)  { tr.health = 1.0f; tr.destroyed = false; }
+    for (auto& pr : s.chunkProps)  { pr.health = 1.0f; pr.destroyed = false; }
+    for (auto& an : s.animals)     { an.health = 1.0f; an.destroyed = false; }
+    for (auto& v  : s.vehicles)    { v.health  = 1.0f; v.destroyed  = false; }
+    for (auto& b  : s.birds)       { b.health  = 1.0f; b.destroyed  = false; }
+    s.destroyedObjs.clear();
+    s.debrisPieces.clear();
+    s.scorchMarks.clear();
+    s.scorePopups.clear();
+    s.comboCount = 0;
+    s.comboTimer = 0.0f;
+    s.comboMultiplier = 1.0f;
+    s.tornadoTrail.clear();
+    s.trailSampleTimer = 0.0f;
+    s.maxCombo = 0;
+    s.runStartT = s.gameTime;
+    g_paused = false;
+    notifyRunStart(timeAttack ? 1 : 0, g_difficulty);
+}
+
+// After a classic victory: keep the run going with ever-harder waves.
+static bool continueEndless() {
+    auto& s = app;
+    if (s.gamePhase != GamePhase::VICTORY || s.timeAttack) return false;
+    s.endlessMode = true;
+    s.wave.number++;
+    s.wave.target = WAVE_BASE_TARGET + (s.wave.number - 1) * WAVE_TARGET_STEP;
+    s.wave.destroyed = 0;
+    s.wave.announceTimer = 0.0f;
+    s.wave.efScale = 5;
+    s.gamePhase = GamePhase::WAVE_ANNOUNCE;
+    s.victoryTimer = 0.0f;
+    s.lastDestroyTime = s.gameTime;
+    playWaveSound();
+    vibrate(45);
+    return true;
+}
+
+// Run statistics for the UI / leaderboard (see RunStat in web_bridge.h).
+static int runStat(int which) {
+    const auto& s = app;
+    switch (which) {
+        case STAT_SCORE:      return s.score.scorePoints;
+        case STAT_WAVE:       return s.wave.number;
+        case STAT_HOUSES:     return s.score.housesDestroyed;
+        case STAT_TREES:      return s.score.treesDestroyed;
+        case STAT_PROPS:      return s.score.propsDestroyed;
+        case STAT_ANIMALS:    return s.score.animalsDestroyed;
+        case STAT_VEHICLES:   return s.score.vehiclesDestroyed;
+        case STAT_BIRDS:      return s.score.birdsDestroyed;
+        case STAT_MAX_COMBO:  return s.maxCombo;
+        case STAT_RUN_TIME:   return (int)(s.gameTime - s.runStartT);
+        case STAT_MODE:       return s.timeAttack ? 1 : 0;
+        case STAT_DIFFICULTY: return g_difficulty;
+        case STAT_ENDLESS:    return s.endlessMode ? 1 : 0;
+        case STAT_DESTROYED:  return s.score.totalDestroyed;
+        case STAT_PHASE:      return (int)s.gamePhase;
+        case STAT_TORNADO_X10:return (int)(s.tornadoScale * 10.0f);
+        default:              return 0;
+    }
+}
 
 #ifdef PLATFORM_EMSCRIPTEN
 extern "C" {
@@ -449,7 +540,9 @@ extern "C" {
         g_paused = (paused != 0);
     }
     EMSCRIPTEN_KEEPALIVE void set_difficulty(int level) {
-        g_difficulty = std::clamp(level, 0, 2);
+        g_pendingDifficulty = std::clamp(level, 0, 2);
+        // No run in progress: nothing to protect, apply right away.
+        if (app.gamePhase == GamePhase::MENU) g_difficulty = g_pendingDifficulty;
     }
     // Called from JS on the first user gesture: unlock audio + haptics.
     EMSCRIPTEN_KEEPALIVE void notify_user_gesture() {
@@ -457,44 +550,29 @@ extern "C" {
         if (!app.soundInitialized) { initSound(); app.soundInitialized = true; }
     }
     EMSCRIPTEN_KEEPALIVE void restart_game() {
-        // Allow restart from any game phase, not just VICTORY
-        app.score = Score{};
-        app.tornadoScale = 1.0f;
-        app.lastDestroyTime = (float)(glfwGetTime() - app.startTime);
-        app.wave = Wave{};
-        app.wave.announceTimer = 0.0f;
-        app.gamePhase = GamePhase::WAVE_ANNOUNCE;
-        app.victoryTimer = 0.0f;
-        app.minScaleTimer = 0.0f;
-        app.endlessMode = false;
-        app.activePowerUps.clear();
-        app.powerUps.clear();
-        app.powerUpSpawnTimer = 5.0f;
-        for (auto& h  : app.houses)      { h.health  = 1.0f; h.destroyed  = false; }
-        for (auto& tr : app.chunkTrees)  { tr.health = 1.0f; tr.destroyed = false; }
-        for (auto& pr : app.chunkProps)  { pr.health = 1.0f; pr.destroyed = false; }
-        for (auto& an : app.animals)     { an.health = 1.0f; an.destroyed = false; }
-        for (auto& v  : app.vehicles)    { v.health  = 1.0f; v.destroyed  = false; }
-        for (auto& b  : app.birds)       { b.health  = 1.0f; b.destroyed  = false; }
-        app.destroyedObjs.clear();
-        app.debrisPieces.clear();
-        app.scorchMarks.clear();
-        app.scorePopups.clear();
-        app.comboCount = 0;
-        app.comboTimer = 0.0f;
-        app.comboMultiplier = 1.0f;
-        app.tornadoTrail.clear();
-        app.trailSampleTimer = 0.0f;
-        app.timeAttack = false;
-        app.timeAttackRemaining = 0.0f;
-        app.maxCombo = 0;
-        app.runStartT = (float)(glfwGetTime() - app.startTime);
-        g_paused = false;
+        resetRun(app.timeAttack);
     }
     EMSCRIPTEN_KEEPALIVE void start_time_attack() {
-        restart_game();
-        app.timeAttack = true;
-        app.timeAttackRemaining = TIME_ATTACK_SECONDS;
+        resetRun(true);
+    }
+    // mode: 0 = classic waves, 1 = Time Attack
+    EMSCRIPTEN_KEEPALIVE void start_run(int mode) {
+        resetRun(mode == 1);
+    }
+    // Back to the attract-mode menu (no run in progress)
+    EMSCRIPTEN_KEEPALIVE void enter_menu() {
+        resetRun(false);
+        app.gamePhase = GamePhase::MENU;
+        g_paused = false;
+    }
+    EMSCRIPTEN_KEEPALIVE int continue_endless() {
+        return continueEndless() ? 1 : 0;
+    }
+    EMSCRIPTEN_KEEPALIVE void set_reduced_motion(int on) {
+        g_reducedMotion = (on != 0);
+    }
+    EMSCRIPTEN_KEEPALIVE int get_run_stat(int which) {
+        return runStat(which);
     }
     EMSCRIPTEN_KEEPALIVE int get_score_points() {
         return app.score.scorePoints;
@@ -982,7 +1060,8 @@ static void main_loop() {
     s.lastT     = nowT;
     if (dt > 0.1f || dt < 0.0f) dt = 0.016f;
 
-    float t = (float)nowT - s.startTime;
+    s.gameTime += dt;
+    float t = s.gameTime;
 
     // -- Update chunks around player --
     updateChunks(s.camera.pos);
@@ -1044,7 +1123,16 @@ static void main_loop() {
             float tHit = -rayO.y / rayD.y;
             if (tHit > 0.0f) bestT = tHit;
         }
-        if (bestT > 0.0f) {
+        if (s.gamePhase == GamePhase::MENU) {
+            // Attract mode: a lazy figure-eight in front of the camera
+            float yawR = glm::radians(s.camera.yaw);
+            glm::vec2 fwd(cosf(yawR), sinf(yawR));      // camera heading on XZ
+            glm::vec2 rgt(-fwd.y, fwd.x);
+            glm::vec2 c(s.camera.pos.x, s.camera.pos.z);
+            glm::vec2 target = c + fwd * (16.0f + 4.0f * sinf(t * 0.21f))
+                                 + rgt * (9.0f * sinf(t * 0.33f));
+            s.tornadoPos = glm::mix(s.tornadoPos, target, 1.0f - expf(-1.5f * dt));
+        } else if (bestT > 0.0f) {
             glm::vec3 hit = rayO + rayD * bestT;
             glm::vec2 target(hit.x, hit.z);
             s.tornadoPos = glm::mix(s.tornadoPos, target, 1.0f - expf(-6.0f * dt));
@@ -1094,7 +1182,7 @@ static void main_loop() {
             s.victoryTimer = 0.0f;
             playGameOverSound();
             vibrate(120);
-            saveScore(s.score.scorePoints, s.wave.number);
+            notifyRunEnd(RUN_END_GAME_OVER);
         }
     }
 
@@ -1109,7 +1197,7 @@ static void main_loop() {
             s.victoryTimer = 0.0f;
             playVictorySound();
             vibrate(60);
-            saveScore(s.score.scorePoints, s.wave.number);
+            notifyRunEnd(RUN_END_TIME_UP);
         }
     }
 
@@ -1158,6 +1246,12 @@ static void main_loop() {
     // ── Power-up collection ──
     for (auto it = s.powerUps.begin(); it != s.powerUps.end();) {
         if (it->collected) { ++it; continue; }
+        float camDist = glm::length(glm::vec2(it->pos.x - s.camera.pos.x,
+                                              it->pos.z - s.camera.pos.z));
+        if (t - it->spawnTime > POWERUP_LIFETIME || camDist > POWERUP_DESPAWN_DIST) {
+            it = s.powerUps.erase(it);
+            continue;
+        }
         float dist = glm::length(glm::vec2(it->pos.x - s.tornadoPos.x,
                                             it->pos.z - s.tornadoPos.y));
         float collectR = POWERUP_COLLECT_RADIUS * s.tornadoScale;
@@ -1208,7 +1302,8 @@ static void main_loop() {
     // ── Destruction: damage houses near tornado ──
     float efMult = EF_RADIUS_MULT[std::clamp(s.wave.efScale, 0, 5)];
     float effectiveRadius = DESTRUCTION_RADIUS * s.tornadoScale * sizeMult * efMult;
-    if (s.gamePhase == GamePhase::GAME_OVER) effectiveRadius = 0.0f; // dead tornado
+    if (s.gamePhase == GamePhase::GAME_OVER || s.gamePhase == GamePhase::MENU)
+        effectiveRadius = 0.0f; // dead tornado / attract mode
 
     bool destroyedSomething = false;
     float newPoints = 0.0f;
@@ -1464,7 +1559,7 @@ static void main_loop() {
             s.victoryTimer = 0.0f;
             playVictorySound();
             vibrate(60);
-            saveScore(s.score.scorePoints, s.wave.number);
+            notifyRunEnd(RUN_END_VICTORY);
         } else {
             s.wave.number++;
             s.wave.target = WAVE_BASE_TARGET + (s.wave.number - 1) * WAVE_TARGET_STEP;
@@ -1590,10 +1685,13 @@ static void main_loop() {
     forward.z = sinf(glm::radians(s.camera.yaw)) * cosf(glm::radians(s.camera.pitch));
     forward = glm::normalize(forward);
     glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0,1,0)));
-    if (glfwGetKey(s.window, GLFW_KEY_W) == GLFW_PRESS) s.camera.pos += forward * s.camera.speed * dt;
-    if (glfwGetKey(s.window, GLFW_KEY_S) == GLFW_PRESS) s.camera.pos -= forward * s.camera.speed * dt;
-    if (glfwGetKey(s.window, GLFW_KEY_A) == GLFW_PRESS) s.camera.pos -= right   * s.camera.speed * dt;
-    if (glfwGetKey(s.window, GLFW_KEY_D) == GLFW_PRESS) s.camera.pos += right   * s.camera.speed * dt;
+    auto key = [&](int a, int b) {
+        return glfwGetKey(s.window, a) == GLFW_PRESS || glfwGetKey(s.window, b) == GLFW_PRESS;
+    };
+    if (key(GLFW_KEY_W, GLFW_KEY_UP))    s.camera.pos += forward * s.camera.speed * dt;
+    if (key(GLFW_KEY_S, GLFW_KEY_DOWN))  s.camera.pos -= forward * s.camera.speed * dt;
+    if (key(GLFW_KEY_A, GLFW_KEY_LEFT))  s.camera.pos -= right   * s.camera.speed * dt;
+    if (key(GLFW_KEY_D, GLFW_KEY_RIGHT)) s.camera.pos += right   * s.camera.speed * dt;
 
     // Virtual joystick (mobile touch)
     if (fabsf(g_touchMoveX) > 0.05f || fabsf(g_touchMoveY) > 0.05f) {
@@ -1619,7 +1717,8 @@ static void main_loop() {
     // ── Storm sky (fullscreen, behind everything) ──
     glDisable(GL_DEPTH_TEST);
     glUseProgram(s.skyProgram);
-    glUniform1f(s.su.lightningFlash, s.lightning.intensity);
+    const float flash = s.lightning.intensity * (g_reducedMotion ? 0.25f : 1.0f);
+    glUniform1f(s.su.lightningFlash, flash);
     glUniform1f(s.su.time, t);
     glUniform1f(s.su.timeOfDay, s.dayTime);
     glUniform1f(s.su.weather, s.weatherIntensity);
@@ -1633,7 +1732,7 @@ static void main_loop() {
 
     // Camera shake: jitter in view space, decaying exponentially
     s.shakeAmp *= expf(-5.0f * dt);
-    if (s.shakeAmp > 0.003f) {
+    if (s.shakeAmp > 0.003f && !g_reducedMotion) {
         glm::vec3 jitter((s.rnd01(s.rng) - 0.5f) * s.shakeAmp,
                          (s.rnd01(s.rng) - 0.5f) * s.shakeAmp, 0.0f);
         view = glm::translate(glm::mat4(1.0f), jitter) * view;
@@ -1653,7 +1752,7 @@ static void main_loop() {
     glUniformMatrix4fv(mu.view, 1, GL_FALSE, glm::value_ptr(view));
     glUniform1f(mu.time, t);
     glUniform3fv(mu.camPos, 1, glm::value_ptr(s.camera.pos));
-    glUniform1f(mu.lightningFlash, s.lightning.intensity);
+    glUniform1f(mu.lightningFlash, flash);
     glUniform1f(mu.windBend, 0.0f);
     glUniform3f(mu.windSource, s.tornadoPos.x, 0.0f, s.tornadoPos.y);
     glUniform1f(mu.timeOfDay, s.dayTime);
@@ -2082,9 +2181,9 @@ static void main_loop() {
     }
 
     // ════════════════════════════════
-    // HUD — score, wave, power-ups, minimap, overlays
+    // HUD — score, wave, power-ups, minimap, overlays (none in the menu)
     // ════════════════════════════════
-    {
+    if (s.gamePhase != GamePhase::MENU) {
         glDisable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -2390,7 +2489,7 @@ static void main_loop() {
 
         // ── Tornado fading warning (game over countdown) ──
         if (s.gamePhase == GamePhase::PLAYING && s.minScaleTimer > 0.5f) {
-            float remain = GAMEOVER_FADE_TIME - s.minScaleTimer;
+            float remain = GAMEOVER_FADE_TIME * diffFadeMult() - s.minScaleTimer;
             float wPulse = 0.6f + 0.4f * sinf(t * 6.0f);
             snprintf(buf, sizeof(buf), "TORNADA SLABESTE: %d", (int)ceilf(remain));
             float ww = (float)strlen(buf) * 0.028f;
@@ -2456,8 +2555,8 @@ static void main_loop() {
             centerLine(buf, y - 0.09f, cwv, chv, glm::vec3(1.0f, 0.6f, 0.3f));
         };
 
-        // ── Victory screen ──
-        if (s.gamePhase == GamePhase::VICTORY) {
+        // ── Victory screen (native only; the web page shows an HTML panel) ──
+        if (s.gamePhase == GamePhase::VICTORY && !kWebUi) {
             s.victoryTimer += dt;
 
             renderQuadA(-0.64f, -0.50f, 0.64f, 0.52f,
@@ -2492,8 +2591,8 @@ static void main_loop() {
             }
         }
 
-        // ── Game over screen ──
-        if (s.gamePhase == GamePhase::GAME_OVER) {
+        // ── Game over screen (native only) ──
+        if (s.gamePhase == GamePhase::GAME_OVER && !kWebUi) {
             s.victoryTimer += dt;
 
             renderQuadA(-0.64f, -0.50f, 0.64f, 0.52f,
@@ -2530,7 +2629,7 @@ static void main_loop() {
 
         // ── Lightning full-screen flash ──
         if (s.lightning.intensity > 0.01f) {
-            float flashAlpha = s.lightning.intensity * 0.28f;
+            float flashAlpha = flash * 0.28f;
             renderQuadA(-1.0f, -1.0f, 1.0f, 1.0f,
                         glm::vec3(0.9f, 0.95f, 1.0f), flashAlpha);
         }
@@ -2558,58 +2657,14 @@ static void main_loop() {
         glEnable(GL_DEPTH_TEST);
     }
 
-    // ── Endless mode on E key (during a normal victory, not Time Attack) ──
-    if (s.gamePhase == GamePhase::VICTORY && !s.timeAttack &&
-        glfwGetKey(s.window, GLFW_KEY_E) == GLFW_PRESS) {
-        s.endlessMode = true;
-        s.wave.number++;
-        s.wave.target = WAVE_BASE_TARGET + (s.wave.number - 1) * WAVE_TARGET_STEP;
-        s.wave.destroyed = 0;
-        s.wave.announceTimer = 0.0f;
-        s.wave.efScale = 5;
-        s.gamePhase = GamePhase::WAVE_ANNOUNCE;
-        s.victoryTimer = 0.0f;
-        s.lastDestroyTime = t;
-        playWaveSound();
-        vibrate(45);
-    }
-
-    // ── Restart on R key (during victory or game over) ──
-    if (s.gamePhase == GamePhase::VICTORY || s.gamePhase == GamePhase::GAME_OVER) {
-        if (glfwGetKey(s.window, GLFW_KEY_R) == GLFW_PRESS) {
-            s.score = Score{};
-            s.tornadoScale = 1.0f;
-            s.lastDestroyTime = t;
-            s.wave = Wave{};
-            s.wave.announceTimer = 0.0f;
-            s.gamePhase = GamePhase::WAVE_ANNOUNCE;
-            s.victoryTimer = 0.0f;
-            s.minScaleTimer = 0.0f;
-            s.endlessMode = false;
-            s.timeAttack = false;
-            s.timeAttackRemaining = 0.0f;
-            s.activePowerUps.clear();
-            s.powerUps.clear();
-            s.powerUpSpawnTimer = 5.0f;
-            for (auto& h : s.houses)      { h.health = 1.0f; h.destroyed = false; }
-            for (auto& tr : s.chunkTrees) { tr.health = 1.0f; tr.destroyed = false; }
-            for (auto& pr : s.chunkProps) { pr.health = 1.0f; pr.destroyed = false; }
-            for (auto& an : s.animals)    { an.health = 1.0f; an.destroyed = false; }
-            for (auto& v  : s.vehicles)   { v.health  = 1.0f; v.destroyed  = false; }
-            for (auto& b  : s.birds)      { b.health  = 1.0f; b.destroyed  = false; }
-            s.destroyedObjs.clear();
-            s.debrisPieces.clear();
-            s.scorchMarks.clear();
-            s.scorePopups.clear();
-            s.comboCount = 0;
-            s.comboTimer = 0.0f;
-            s.comboMultiplier = 1.0f;
-            s.tornadoTrail.clear();
-            s.trailSampleTimer = 0.0f;
-            s.maxCombo = 0;
-            s.runStartT = t;
-        }
-    }
+#ifndef PLATFORM_EMSCRIPTEN
+    // Desktop build: E = endless after victory, R = restart on the end screens.
+    // (The web page drives these from JavaScript and its own buttons.)
+    if (glfwGetKey(s.window, GLFW_KEY_E) == GLFW_PRESS) continueEndless();
+    if ((s.gamePhase == GamePhase::VICTORY || s.gamePhase == GamePhase::GAME_OVER) &&
+        glfwGetKey(s.window, GLFW_KEY_R) == GLFW_PRESS)
+        resetRun(s.timeAttack);
+#endif
 
     // -- FPS counter --
     s.fpsFrames++;
@@ -3462,9 +3517,11 @@ int main() {
     app.startTime = (float)glfwGetTime();
     app.lastT     = glfwGetTime();
     app.fpsTimer  = glfwGetTime();
-    app.lastDestroyTime = app.startTime;
+    app.lastDestroyTime = 0.0f;
     app.wave.target = WAVE_BASE_TARGET;
-    app.gamePhase = GamePhase::WAVE_ANNOUNCE;
+    // The web build waits behind its start screen until the player picks a
+    // mode; the desktop build has no menu and starts right away.
+    app.gamePhase = kWebUi ? GamePhase::MENU : GamePhase::WAVE_ANNOUNCE;
 
     // ══════════════════════════════════════
     // Enter main loop

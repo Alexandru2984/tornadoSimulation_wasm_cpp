@@ -117,6 +117,8 @@ static const float POWERUP_COLLECT_RADIUS = 2.5f;
 static const float POWERUP_DURATION       = 6.0f;   // seconds (for timed effects)
 static const float POWERUP_BOB_SPEED      = 3.0f;
 static const float POWERUP_BOB_HEIGHT     = 0.3f;
+static const float POWERUP_LIFETIME       = 25.0f;  // uncollected power-ups vanish
+static const float POWERUP_DESPAWN_DIST   = 90.0f;  // ...or once left far behind
 
 // Minimap
 static const float MINIMAP_RADIUS        = 60.0f;   // world-space range

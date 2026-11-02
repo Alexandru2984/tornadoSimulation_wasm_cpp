@@ -6,14 +6,14 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <algorithm>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+#include "constants.h"
+#include "terrain_noise.h"
 
 static const float EPS = 1e-5f;
 
@@ -215,6 +215,54 @@ TEST(shader_version_adaptation) {
 // ═════════════════════════════════════════════════════════════════════
 // Runner
 // ═════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════
+// Real game code (constants.h / terrain_noise.h), not re-implementations
+// ═════════════════════════════════════════════════════════════════════
+TEST(terrain_is_deterministic) {
+    for (int i = 0; i < 200; ++i) {
+        float x = (i * 37 % 400) - 200.0f, z = (i * 91 % 400) - 200.0f;
+        ASSERT_TRUE(getTerrainHeight(x, z) == getTerrainHeight(x, z));
+    }
+}
+
+TEST(spawn_plateau_is_dry_land) {
+    // The player starts at the origin; objects there must not be underwater.
+    for (float x = -6.0f; x <= 6.0f; x += 1.5f)
+        for (float z = -6.0f; z <= 6.0f; z += 1.5f)
+            ASSERT_TRUE(getTerrainHeight(x, z) > WATER_LEVEL + 0.2f);
+}
+
+TEST(terrain_height_bounded_and_finite) {
+    for (int i = 0; i < 2000; ++i) {
+        float x = (float)((i * 7919) % 20000) - 10000.0f;
+        float z = (float)((i * 104729) % 20000) - 10000.0f;
+        float h = getTerrainHeight(x, z);
+        ASSERT_TRUE(std::isfinite(h));
+        ASSERT_TRUE(h > -10.0f && h < 10.0f);
+    }
+}
+
+TEST(hash_noise_range) {
+    for (int i = -500; i < 500; ++i) {
+        float n = hashNoise(i, i * 3 + 7);
+        ASSERT_TRUE(n >= -1.0f && n <= 1.0f);
+    }
+}
+
+TEST(wave_targets_match_leaderboard_rules) {
+    // server/leaderboard.py: kills_to_reach_wave(11) == 185
+    int kills = 0;
+    for (int w = 1; w <= TOTAL_WAVES; ++w) kills += WAVE_BASE_TARGET + (w - 1) * WAVE_TARGET_STEP;
+    ASSERT_TRUE(kills == 185);
+}
+
+TEST(combo_multiplier_caps) {
+    auto mult = [](int combo) { return 1.0f + std::min(combo / COMBO_STEP, COMBO_MAX_MULT - 1.0f); };
+    ASSERT_APPROX(mult(0), 1.0f);
+    ASSERT_APPROX(mult(3), 2.0f);
+    ASSERT_APPROX(mult(1000), COMBO_MAX_MULT);
+}
+
 int main() {
     std::cout << "Running " << tests.size() << " tests...\n\n";
     for (auto& t : tests) {

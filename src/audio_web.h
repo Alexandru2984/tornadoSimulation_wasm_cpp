@@ -20,7 +20,11 @@ static bool g_userInteracted = false;
 EM_JS(void, js_initSound, (), {
     if (window._tornadoAudio) return;
     var ctx = new (window.AudioContext || window.webkitAudioContext)();
-    window._tornadoAudio = {ctx: ctx, windGain: null};
+    // One master bus for volume + mute; the page adjusts master.gain.
+    var master = ctx.createGain();
+    master.gain.value = (typeof window._tornadoVolume === "number") ? window._tornadoVolume : 0.8;
+    master.connect(ctx.destination);
+    window._tornadoAudio = {ctx: ctx, windGain: null, master: master};
     var bufSize = ctx.sampleRate * 2;
     var buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
     var d = buf.getChannelData(0);
@@ -30,7 +34,7 @@ EM_JS(void, js_initSound, (), {
     var bp = ctx.createBiquadFilter();
     bp.type = "bandpass"; bp.frequency.value = 300; bp.Q.value = 0.5;
     var gain = ctx.createGain(); gain.gain.value = 0.15;
-    src.connect(bp); bp.connect(gain); gain.connect(ctx.destination);
+    src.connect(bp); bp.connect(gain); gain.connect(master);
     src.start();
     window._tornadoAudio.windGain = gain;
     window._tornadoAudio.windFilter = bp;
@@ -43,7 +47,7 @@ EM_JS(void, js_initSound, (), {
     var lfo = ctx.createOscillator(); lfo.type = "sine"; lfo.frequency.value = 0.08;
     var lfoG = ctx.createGain(); lfoG.gain.value = 0.02;
     lfo.connect(lfoG); lfoG.connect(dg.gain);
-    d1.connect(dlp); d2.connect(dlp); dlp.connect(dg); dg.connect(ctx.destination);
+    d1.connect(dlp); d2.connect(dlp); dlp.connect(dg); dg.connect(master);
     d1.start(); d2.start(); lfo.start();
     window._tornadoAudio.musicGain = dg;
 });
@@ -61,7 +65,7 @@ EM_JS(void, js_playDestroySound, (), {
     var src = ctx.createBufferSource(); src.buffer = buf;
     var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 400;
     var g = ctx.createGain(); g.gain.value = 0.35;
-    src.connect(lp); lp.connect(g); g.connect(ctx.destination);
+    src.connect(lp); lp.connect(g); g.connect(a.master);
     src.start();
 });
 
@@ -75,7 +79,7 @@ EM_JS(void, js_playPowerUpSound, (), {
     var g = ctx.createGain();
     g.gain.setValueAtTime(0.25, ctx.currentTime);
     g.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.2);
-    osc.connect(g); g.connect(ctx.destination);
+    osc.connect(g); g.connect(a.master);
     osc.start(); osc.stop(ctx.currentTime + 0.2);
 });
 
@@ -91,7 +95,7 @@ EM_JS(void, js_playWaveSound, (), {
         g.gain.setValueAtTime(0, ctx.currentTime + i*0.12);
         g.gain.linearRampToValueAtTime(0.15, ctx.currentTime + i*0.12 + 0.03);
         g.gain.linearRampToValueAtTime(0, ctx.currentTime + i*0.12 + 0.3);
-        osc.connect(g); g.connect(ctx.destination);
+        osc.connect(g); g.connect(a.master);
         osc.start(ctx.currentTime + i*0.12);
         osc.stop(ctx.currentTime + i*0.12 + 0.3);
     }
@@ -110,7 +114,7 @@ EM_JS(void, js_playThunderSound, (), {
     var src = ctx.createBufferSource(); src.buffer = buf;
     var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 200;
     var g = ctx.createGain(); g.gain.value = 0.4;
-    src.connect(lp); lp.connect(g); g.connect(ctx.destination);
+    src.connect(lp); lp.connect(g); g.connect(a.master);
     src.start();
 });
 
@@ -131,7 +135,7 @@ EM_JS(void, js_playVictorySound, (), {
         g.gain.setValueAtTime(0, ctx.currentTime + i*0.2);
         g.gain.linearRampToValueAtTime(0.2, ctx.currentTime + i*0.2 + 0.05);
         g.gain.linearRampToValueAtTime(0, ctx.currentTime + i*0.2 + 0.5);
-        osc.connect(g); g.connect(ctx.destination);
+        osc.connect(g); g.connect(a.master);
         osc.start(ctx.currentTime + i*0.2);
         osc.stop(ctx.currentTime + i*0.2 + 0.5);
     }
@@ -149,7 +153,7 @@ EM_JS(void, js_playMooSound, (), {
     g.gain.setValueAtTime(0.001, ctx.currentTime);
     g.gain.linearRampToValueAtTime(0.22, ctx.currentTime + 0.06);
     g.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.4);
-    osc.connect(lp); lp.connect(g); g.connect(ctx.destination);
+    osc.connect(lp); lp.connect(g); g.connect(a.master);
     osc.start(); osc.stop(ctx.currentTime + 0.4);
 });
 
@@ -164,39 +168,10 @@ EM_JS(void, js_playGameOverSound, (), {
         g.gain.setValueAtTime(0, ctx.currentTime + i*0.25);
         g.gain.linearRampToValueAtTime(0.2, ctx.currentTime + i*0.25 + 0.05);
         g.gain.linearRampToValueAtTime(0, ctx.currentTime + i*0.25 + 0.6);
-        osc.connect(g); g.connect(ctx.destination);
+        osc.connect(g); g.connect(a.master);
         osc.start(ctx.currentTime + i*0.25);
         osc.stop(ctx.currentTime + i*0.25 + 0.6);
     }
-});
-
-EM_JS(void, js_saveScore, (int score, int wave), {
-    try {
-        var key = "tornado3d_scores";
-        var scores = JSON.parse(localStorage.getItem(key) || "[]");
-        scores.push({score: score, wave: wave, date: new Date().toLocaleDateString()});
-        scores.sort(function(a,b) { return b.score - a.score; });
-        if (scores.length > 10) scores = scores.slice(0, 10);
-        localStorage.setItem(key, JSON.stringify(scores));
-    } catch(e) {}
-    // Submit to the global leaderboard too (fire and forget)
-    try {
-        if (score > 0 && typeof fetch === "function") {
-            var name = (localStorage.getItem("tornado3d_name") || "ANONIM").slice(0, 16);
-            fetch("/api/scores", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({name: name, score: score, wave: wave})
-            }).catch(function(){});
-        }
-    } catch(e) {}
-});
-
-EM_JS(int, js_getHighScore, (), {
-    try {
-        var scores = JSON.parse(localStorage.getItem("tornado3d_scores") || "[]");
-        return scores.length > 0 ? scores[0].score : 0;
-    } catch(e) { return 0; }
 });
 
 EM_JS(void, js_playBaaSound, (), {
@@ -212,7 +187,7 @@ EM_JS(void, js_playBaaSound, (), {
     g.gain.setValueAtTime(0.001, ctx.currentTime);
     g.gain.linearRampToValueAtTime(0.16, ctx.currentTime + 0.04);
     g.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3);
-    osc.connect(lp); lp.connect(g); g.connect(ctx.destination);
+    osc.connect(lp); lp.connect(g); g.connect(a.master);
     osc.start(); osc.stop(ctx.currentTime + 0.3);
 });
 
@@ -278,17 +253,5 @@ static void playMooSound() {
 static void playBaaSound() {
 #ifdef PLATFORM_EMSCRIPTEN
     if (!g_soundMuted) js_playBaaSound();
-#endif
-}
-static void saveScore(int score, int wave) {
-#ifdef PLATFORM_EMSCRIPTEN
-    js_saveScore(score, wave);
-#endif
-}
-static int getHighScore() {
-#ifdef PLATFORM_EMSCRIPTEN
-    return js_getHighScore();
-#else
-    return 0;
 #endif
 }
