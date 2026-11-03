@@ -327,6 +327,7 @@ struct AppState {
     float minScaleTimer = 0.0f;  // time spent at minimum tornado size
     bool endlessMode = false;    // keep spawning waves after wave 10
     bool timeAttack = false;     // score-chase mode with a countdown
+    bool daily = false;          // ...on the daily world (implies timeAttack)
     float timeAttackRemaining = 0.0f;
 
     // Power-ups
@@ -436,9 +437,52 @@ static float diffFadeMult()    { const float v[3] = {1.5f, 1.0f, 0.7f};  return 
 static float diffPowerupMult() { const float v[3] = {1.4f, 1.0f, 0.7f}; return v[std::clamp(g_difficulty,0,2)]; }
 
 // ── Run lifecycle (shared by the JS exports and the native key handlers) ──
-static void resetRun(bool timeAttack) {
+static void buildTerrainMesh(float centerX, float centerZ);
+
+// Switches the procedural world (see g_worldSeed). Everything generated
+// from the old seed is dropped; chunks come back around the camera on the
+// next frame and the terrain mesh is rebuilt now.
+static void setWorldSeed(uint32_t seed) {
     auto& s = app;
-    g_difficulty = g_pendingDifficulty;
+    if (seed == g_worldSeed) return;
+    g_worldSeed = seed;
+    s.houses.clear();
+    s.chunkTrees.clear();
+    s.chunkProps.clear();
+    s.animals.clear();
+    s.vehicles.clear();
+    s.birds.clear();
+    s.loadedChunks.clear();
+    s.destroyedObjs.clear();
+    s.debrisPieces.clear();
+    s.scorchMarks.clear();
+    s.powerUps.clear();
+    buildTerrainMesh(s.terrainCenter.x, s.terrainCenter.y);
+}
+
+static RunMode currentMode() {
+    return app.daily ? MODE_DAILY : app.timeAttack ? MODE_TIME_ATTACK : MODE_CLASSIC;
+}
+
+// Starts a fresh run. `announce` tells the page (run token, UI); returning
+// to the menu resets the same way but is not a run.
+static void resetRun(RunMode mode, bool announce = true) {
+    auto& s = app;
+    const bool timeAttack = mode != MODE_CLASSIC;
+    s.daily = mode == MODE_DAILY;
+    // The daily challenge is the same for everyone: Normal difficulty, the
+    // same starting spot, light, weather and power-up sequence. Its world
+    // seed is set by the caller (start_daily).
+    g_difficulty = s.daily ? 1 : g_pendingDifficulty;
+    if (s.daily) {
+        s.camera = Camera{};
+        s.tornadoPos = glm::vec2(0.0f, 0.0f);
+        s.dayTime = 0.32f;
+        s.weatherIntensity = s.weatherTarget = 0.7f;
+        s.weatherTimer = 12.0f;
+        s.rng.seed(g_worldSeed);
+        buildTerrainMesh(0.0f, 0.0f);
+    }
     s.score = Score{};
     s.tornadoScale = 1.0f;
     s.lastDestroyTime = s.gameTime;
@@ -471,7 +515,7 @@ static void resetRun(bool timeAttack) {
     s.maxCombo = 0;
     s.runStartT = s.gameTime;
     g_paused = false;
-    notifyRunStart(timeAttack ? 1 : 0, g_difficulty);
+    if (announce) notifyRunStart((int)mode, g_difficulty);
 }
 
 // After a classic victory: keep the run going with ever-harder waves.
@@ -506,7 +550,7 @@ static int runStat(int which) {
         case STAT_BIRDS:      return s.score.birdsDestroyed;
         case STAT_MAX_COMBO:  return s.maxCombo;
         case STAT_RUN_TIME:   return (int)(s.gameTime - s.runStartT);
-        case STAT_MODE:       return s.timeAttack ? 1 : 0;
+        case STAT_MODE:       return (int)currentMode();
         case STAT_DIFFICULTY: return g_difficulty;
         case STAT_ENDLESS:    return s.endlessMode ? 1 : 0;
         case STAT_DESTROYED:  return s.score.totalDestroyed;
@@ -553,18 +597,26 @@ extern "C" {
         if (!app.soundInitialized) { initSound(); app.soundInitialized = true; }
     }
     EMSCRIPTEN_KEEPALIVE void restart_game() {
-        resetRun(app.timeAttack);
+        resetRun(currentMode());
     }
     EMSCRIPTEN_KEEPALIVE void start_time_attack() {
-        resetRun(true);
+        setWorldSeed(0);
+        resetRun(MODE_TIME_ATTACK);
     }
-    // mode: 0 = classic waves, 1 = Time Attack
+    // mode: 0 = classic waves, 1 = Time Attack (daily: start_daily)
     EMSCRIPTEN_KEEPALIVE void start_run(int mode) {
-        resetRun(mode == 1);
+        setWorldSeed(0);
+        resetRun(mode == 1 ? MODE_TIME_ATTACK : MODE_CLASSIC);
     }
-    // Back to the attract-mode menu (no run in progress)
+    // Daily challenge on the world of `seed` (the page derives it from the
+    // UTC date, so everyone gets the same one; 0 is reserved for classic).
+    EMSCRIPTEN_KEEPALIVE void start_daily(unsigned int seed) {
+        setWorldSeed(seed ? seed : 1u);
+        resetRun(MODE_DAILY);
+    }
+    // Back to the attract-mode menu (no run in progress, no run token)
     EMSCRIPTEN_KEEPALIVE void enter_menu() {
-        resetRun(false);
+        resetRun(MODE_CLASSIC, false);
         app.gamePhase = GamePhase::MENU;
         g_paused = false;
     }
@@ -791,7 +843,7 @@ static void generateChunk(int cx, int cz) {
 
     // Deterministic seed from chunk coords — cast to uint32_t before multiply
     // so arithmetic wraps without undefined behaviour.
-    uint32_t seed = ((uint32_t)cx * 73856093u) ^ ((uint32_t)cz * 19349663u);
+    uint32_t seed = ((uint32_t)cx * 73856093u) ^ ((uint32_t)cz * 19349663u) ^ (g_worldSeed * 2654435761u);
     std::mt19937 cRng(seed);
     std::uniform_real_distribution<float> r01(0.0f, 1.0f);
 
@@ -2512,7 +2564,7 @@ static void main_loop() {
 
             float bigCW = 0.05f, bigCH = 0.1f;
             if (s.timeAttack)
-                snprintf(buf, sizeof(buf), "%s", tr(S_TIME_ATTACK));
+                snprintf(buf, sizeof(buf), "%s", tr(s.daily ? S_DAILY : S_TIME_ATTACK));
             else
                 snprintf(buf, sizeof(buf), tr(S_WAVE_N), s.wave.number);
             float textW = (float)strlen(buf) * bigCW;
@@ -2575,7 +2627,7 @@ static void main_loop() {
             centerLine(victoryText, 0.34f, bigCW, bigCH, glm::vec3(1.0f, 0.85f, 0.0f) * pulse);
 
             float smCW = 0.02f, smCH = 0.04f;
-            if (s.timeAttack) snprintf(buf, sizeof(buf), "%s", tr(S_TA_3MIN));
+            if (s.timeAttack) snprintf(buf, sizeof(buf), "%s", tr(s.daily ? S_DAILY : S_TA_3MIN));
             else snprintf(buf, sizeof(buf), tr(S_ALL_WAVES), TOTAL_WAVES);
             centerLine(buf, 0.26f, smCW * 0.85f, smCH * 0.85f, glm::vec3(0.7f, 0.9f, 1.0f));
 
@@ -2670,7 +2722,7 @@ static void main_loop() {
     if (glfwGetKey(s.window, GLFW_KEY_E) == GLFW_PRESS) continueEndless();
     if ((s.gamePhase == GamePhase::VICTORY || s.gamePhase == GamePhase::GAME_OVER) &&
         glfwGetKey(s.window, GLFW_KEY_R) == GLFW_PRESS)
-        resetRun(s.timeAttack);
+        resetRun(currentMode());
 #endif
 
 #ifndef PLATFORM_EMSCRIPTEN

@@ -92,6 +92,7 @@
     <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></symbol>
     <symbol id="i-medal" viewBox="0 0 24 24"><path d="M8 3h8l-2.2 5.2M10.2 8.2 8 3"/><circle cx="12" cy="14.5" r="5.5"/><path d="m12 11.8.9 1.8 2 .3-1.45 1.4.35 2-1.8-.95-1.8.95.35-2-1.45-1.4 2-.3z"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5.5" y="10.5" width="13" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="14.5" rx="2"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4M8 14h2M14 14h2M8 17h2"/></symbol>
     <symbol id="i-tornado" viewBox="0 0 24 24"><path d="M3 5h18M5 9h13M8 13h9M10 17h5M12 21h1.5"/></symbol>
 </svg>
 
@@ -151,6 +152,10 @@
                 <button class="btn btn-lg" id="btn-timeattack" type="button" disabled>
                     <svg class="icon"><use href="#i-clock"/></svg> Time Attack · 3 min
                 </button>
+                <button class="btn btn-daily" id="btn-daily" type="button" disabled aria-describedby="daily-sub">
+                    <svg class="icon"><use href="#i-calendar"/></svg>
+                    <span class="daily-text"><b>Provocarea zilei</b><small id="daily-sub"></small></span>
+                </button>
             </div>
 
             <div class="field-label" id="diff-label">Dificultate</div>
@@ -181,6 +186,7 @@
                 <li><strong>Telefon / tabletă:</strong> degetul stâng este joystick-ul de mișcare, degetul drept rotește privirea și ghidează tornada.</li>
                 <li><strong>Gamepad:</strong> stick-ul stâng mișcă camera, stick-ul drept țintește, butoanele LB/RB rotesc privirea.</li>
                 <li>Completează 10 valuri cu scară tot mai mare (EF0–EF5), apoi continuă în mod infinit — sau încearcă Time Attack: cât de mult distrugi în 3 minute.</li>
+                <li>Provocarea zilei: 3 minute pe harta zilei, aceeași pentru toți. Clasamentul ei se reia în fiecare zi la miezul nopții (UTC).</li>
             </ul>
 
             <h2>Funcționalități</h2>
@@ -191,6 +197,7 @@
                 <li>Clasament global pe moduri, dificultate și perioadă (azi, săptămâna aceasta, luna aceasta, tot timpul).</li>
                 <li>Se poate instala ca aplicație și se joacă și offline.</li>
                 <li>Accesibil: mod cu mișcare redusă (fără tremurul camerei, fulgere atenuate), suport pentru tastatură și gamepad.</li>
+                <li>Provocarea zilei: în fiecare zi o lume nouă, aceeași pentru toți jucătorii, cu clasamentul ei.</li>
                 <li>Disponibil în română și engleză.</li>
             </ul>
 
@@ -293,6 +300,7 @@
         <div class="segmented small" role="radiogroup" aria-label="Mod" data-filter="mode">
             <button type="button" role="radio" data-value="classic">Clasic</button>
             <button type="button" role="radio" data-value="timeattack">Time Attack</button>
+            <button type="button" role="radio" data-value="daily">Zilnic</button>
         </div>
         <div class="segmented small" role="radiogroup" aria-label="Dificultate" data-filter="difficulty">
             <button type="button" role="radio" data-value="0">Ușor</button>
@@ -305,10 +313,14 @@
             <button type="button" role="radio" data-value="month">Lună</button>
             <button type="button" role="radio" data-value="all">Tot timpul</button>
         </div>
+        <div class="segmented small" role="radiogroup" aria-label="Ziua" data-filter="day" hidden>
+            <button type="button" role="radio" data-value="0">Azi</button>
+            <button type="button" role="radio" data-value="1">Ieri</button>
+        </div>
     </div>
     <div id="scores-panel" role="tabpanel" aria-labelledby="tab-global" class="table-wrap">
         <table class="scores">
-            <thead><tr><th scope="col">#</th><th scope="col">Nume</th><th scope="col" class="num">Scor</th><th scope="col" class="num">Val</th><th scope="col" class="date">Data</th></tr></thead>
+            <thead><tr><th scope="col">#</th><th scope="col">Nume</th><th scope="col" class="num">Scor</th><th scope="col" class="num wave">Val</th><th scope="col" class="date">Data</th></tr></thead>
             <tbody id="scores-body"></tbody>
         </table>
         <p class="hint center" id="scores-status" role="status" aria-live="polite"></p>
@@ -415,6 +427,7 @@
             <li>Tornada crește când distruge și slăbește când stă degeaba — dacă rămâne prea mică, se risipește.</li>
             <li>Prinde power-up-urile: viteză, mărime ×2, magnet, scut, scor ×2 și înghețare. Dispar dacă le ignori.</li>
             <li>10 valuri pentru victorie, apoi mod infinit. În Time Attack contează doar scorul din 3 minute.</li>
+            <li>Provocarea zilei: aceeași lume și același start pentru toți, 3 minute, dificultate Normal.</li>
         </ul>
         <button class="btn btn-primary btn-lg block" type="button" data-close>Am înțeles</button>
     </div>

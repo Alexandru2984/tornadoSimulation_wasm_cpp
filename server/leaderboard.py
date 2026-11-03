@@ -7,14 +7,23 @@ API v2
 ------
   GET  /api/v2/health
   POST /api/v2/runs     {"mode": "classic"|"timeattack", "difficulty": 0..2}
-                        -> {"run": "<id>", "mode", "difficulty"}
+                        {"mode": "daily", "difficulty": 1, "day": "YYYY-MM-DD"}
+                        -> {"run": "<id>", "mode", "difficulty"[, "day"]}
   GET  /api/v2/scores?mode=classic&difficulty=1&period=all|month|week|day&limit=10
                         -> {"mode", "difficulty", "period", "scores": [...]}
+  GET  /api/v2/scores?mode=daily[&day=YYYY-MM-DD]   (default: today, UTC)
+                        -> {"mode", "day", "scores": [...]}
   POST /api/v2/scores   {"run", "name", "score", "wave", "player",
                          "stats": {"houses", "trees", "props", "animals",
                                    "vehicles", "birds", "maxCombo", "time"}}
                         -> {"ok": true, "rank": n}
   GET  /api/v2/stats    -> global destruction counters
+
+Daily challenge: Time Attack rules on a world picked by the UTC date (the
+page derives the world seed from the date; the server never needs it).
+A daily run belongs to the day the player started it, which must be the
+server's UTC day give or take DAY_TOLERANCE, and is ranked only against
+that day's runs.
 
 Moderation: server/lbadmin.py (list, delete, ban names or devices).
 
@@ -67,7 +76,10 @@ MAX_RUNS = 200_000           # hard cap on the runs table
 SCORE_RETENTION_DAYS = 400   # non-top scores older than this are pruned
 KEEP_TOP_PER_BOARD = 1000
 
-MODES = ("classic", "timeattack")
+MODES = ("classic", "timeattack", "daily")
+TIMED_MODES = ("timeattack", "daily")        # 3-minute score chase, no waves
+DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+DAY_TOLERANCE = 300          # seconds of clock skew accepted around midnight
 PERIODS = {"all": None, "month": 30 * 86400, "week": 7 * 86400, "day": 86400}
 NAME_RE = re.compile(r"^[A-Za-z0-9 _.-]{1,16}$")
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_-]{22,64}$")
@@ -113,6 +125,16 @@ def name_is_allowed(name):
         return False
     tokens = set(re.split(r"[^a-z0-9]+", low)) | {squashed}
     return not any(bad in tokens for bad in BLOCK_TOKEN)
+
+
+def utc_day(ts):
+    return time.strftime("%Y-%m-%d", time.gmtime(ts))
+
+
+def valid_run_day(day, now):
+    """A daily run may only be started on (about) the server's current day."""
+    return isinstance(day, str) and day in {utc_day(now - DAY_TOLERANCE), utc_day(now),
+                                            utc_day(now + DAY_TOLERANCE)}
 
 
 def kills_to_reach_wave(wave):
@@ -162,7 +184,7 @@ def check_submission(run, data, now):
     if score < base_min - kills:          # int() truncation per scoring batch
         return None, "implausible score"
 
-    if run["mode"] == "timeattack":
+    if run["mode"] in TIMED_MODES:
         if wave != 1:
             return None, "inconsistent wave"
         if elapsed < TIME_ATTACK_SECONDS - TIME_SLACK:
@@ -238,6 +260,8 @@ SCORE_COLUMNS = {
     # SHA-256 of the submitting device's player key ('' for old rows): lets
     # a moderator ban the device behind a score, even an anonymous one.
     "player_hash": "TEXT NOT NULL DEFAULT ''",
+    # Daily challenge: the UTC day the run was started ('' for other modes).
+    "day": "TEXT NOT NULL DEFAULT ''",
 }
 
 
@@ -278,7 +302,10 @@ def init_db():
                    started    REAL    NOT NULL,
                    used       INTEGER NOT NULL DEFAULT 0
                ) WITHOUT ROWID""")
+        if "day" not in {r[1] for r in conn.execute("PRAGMA table_info(runs)")}:
+            conn.execute("ALTER TABLE runs ADD COLUMN day TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS runs_started ON runs (started)")
+        conn.execute("CREATE INDEX IF NOT EXISTS scores_daily ON scores (mode, day, score DESC)")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS players (
                    name_key  TEXT PRIMARY KEY,
@@ -328,7 +355,7 @@ def maintenance(now=None):
             """DELETE FROM scores WHERE created_ts < ? AND id NOT IN (
                    SELECT id FROM (
                        SELECT id, ROW_NUMBER() OVER (
-                           PARTITION BY mode, difficulty ORDER BY score DESC, id) AS rn
+                           PARTITION BY mode, difficulty, day ORDER BY score DESC, id) AS rn
                        FROM scores) WHERE rn <= ?)""",
             (int(now) - SCORE_RETENTION_DAYS * 86400, KEEP_TOP_PER_BOARD))
     finally:
@@ -344,13 +371,18 @@ def maintenance_loop():
             print(f"maintenance failed: {exc}", file=sys.stderr, flush=True)
 
 
-def board_query(mode, difficulty, period, limit, now):
-    since = 0 if PERIODS[period] is None else int(now) - PERIODS[period]
+def board_query(mode, difficulty, period, limit, now, day=None):
+    """Best entry per player name (anonymous runs are not merged together).
+    Daily boards are one UTC day; the others filter by difficulty and period."""
+    if mode == "daily":
+        where, args = "mode = 'daily' AND day = ?", (day or utc_day(now),)
+    else:
+        since = 0 if PERIODS[period] is None else int(now) - PERIODS[period]
+        where, args = "mode = ? AND difficulty = ? AND created_ts >= ?", (mode, difficulty, since)
     conn = connect()
     try:
-        # Best entry per player name; anonymous runs are not merged together.
         rows = conn.execute(
-            """SELECT name, score, wave, created_ts, max_combo FROM (
+            f"""SELECT name, score, wave, created_ts, max_combo FROM (
                    SELECT name, score, wave, created_ts, max_combo,
                           ROW_NUMBER() OVER (
                               PARTITION BY CASE WHEN name = ? THEN 'anon:' || id
@@ -358,9 +390,9 @@ def board_query(mode, difficulty, period, limit, now):
                               ORDER BY score DESC, id) AS rn,
                           id
                    FROM scores
-                   WHERE mode = ? AND difficulty = ? AND created_ts >= ?)
+                   WHERE {where})
                WHERE rn = 1 ORDER BY score DESC, id LIMIT ?""",
-            (ANON, mode, difficulty, since, limit)).fetchall()
+            (ANON, *args, limit)).fetchall()
     finally:
         conn.close()
     return [{"rank": i + 1, "name": n, "score": s, "wave": w,
@@ -513,7 +545,15 @@ class Handler(BaseHTTPRequestHandler):
         if mode not in MODES or period not in PERIODS or difficulty not in (0, 1, 2):
             raise ApiError(400, "bad query")
         limit = max(1, min(limit, 50))
-        scores = board_query(mode, difficulty, period, limit, CLOCK())
+        now = CLOCK()
+        if mode == "daily":
+            day = q.get("day", [utc_day(now)])[0]
+            if not DAY_RE.match(day):
+                raise ApiError(400, "bad query")
+            scores = board_query(mode, 1, "all", limit, now, day=day)
+            self._send(200, {"mode": mode, "day": day, "scores": scores}, cache="public, max-age=10")
+            return
+        scores = board_query(mode, difficulty, period, limit, now)
         self._send(200, {"mode": mode, "difficulty": difficulty, "period": period,
                          "scores": scores}, cache="public, max-age=10")
 
@@ -539,14 +579,26 @@ class Handler(BaseHTTPRequestHandler):
         difficulty = data.get("difficulty", 1)
         if mode not in MODES or difficulty not in (0, 1, 2) or isinstance(difficulty, bool):
             raise ApiError(400, "bad request")
+        now = CLOCK()
+        day = ""
+        if mode == "daily":
+            day = data.get("day")
+            if difficulty != 1:
+                raise ApiError(400, "bad request")
+            if not valid_run_day(day, now):
+                # The page's clock (which picked the world) disagrees with ours.
+                raise ApiError(422, "wrong day")
         run_id = secrets.token_urlsafe(18)
         conn = connect()
         try:
-            conn.execute("INSERT INTO runs (id, mode, difficulty, started) VALUES (?,?,?,?)",
-                         (run_id, mode, difficulty, CLOCK()))
+            conn.execute("INSERT INTO runs (id, mode, difficulty, started, day) VALUES (?,?,?,?,?)",
+                         (run_id, mode, difficulty, now, day))
         finally:
             conn.close()
-        self._send(201, {"run": run_id, "mode": mode, "difficulty": difficulty})
+        reply = {"run": run_id, "mode": mode, "difficulty": difficulty}
+        if day:
+            reply["day"] = day
+        self._send(201, reply)
 
     def post_score(self):
         self._check_origin()
@@ -578,13 +630,13 @@ class Handler(BaseHTTPRequestHandler):
             # submissions of the same run cannot both see it as unused.
             conn.execute("BEGIN IMMEDIATE")
             try:
-                r = conn.execute("SELECT mode, difficulty, started, used FROM runs WHERE id = ?",
+                r = conn.execute("SELECT mode, difficulty, started, used, day FROM runs WHERE id = ?",
                                  (run_id,)).fetchone()
                 if r is None or now - r[2] > RUN_TTL:
                     raise ApiError(404, "unknown or expired run")
                 if r[3]:
                     raise ApiError(409, "run already submitted")
-                run = {"mode": r[0], "difficulty": r[1], "started": r[2]}
+                run = {"mode": r[0], "difficulty": r[1], "started": r[2], "day": r[4]}
                 banned = conn.execute(
                     "SELECT 1 FROM bans WHERE (kind = 'player' AND value = ?)"
                     " OR (kind = 'name' AND value = ?)",
@@ -611,15 +663,16 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute(
                     """INSERT INTO scores (name, score, wave, mode, difficulty, houses, trees,
                            props, animals, vehicles, birds, max_combo, run_time, created_ts,
-                           player_hash)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           player_hash, day)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (name, row["score"], row["wave"], run["mode"], run["difficulty"],
                      row["houses"], row["trees"], row["props"], row["animals"],
                      row["vehicles"], row["birds"], row["max_combo"], row["run_time"],
-                     int(now), key_hash))
+                     int(now), key_hash, run["day"]))
                 rank = conn.execute(
                     "SELECT COUNT(*) + 1 FROM scores WHERE mode = ? AND difficulty = ?"
-                    " AND score > ?", (run["mode"], run["difficulty"], row["score"])).fetchone()[0]
+                    " AND day = ? AND score > ?",
+                    (run["mode"], run["difficulty"], run["day"], row["score"])).fetchone()[0]
                 conn.execute("COMMIT")
             except BaseException:
                 if conn.in_transaction:
@@ -627,8 +680,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise
         finally:
             conn.close()
-        self._send(200, {"ok": True, "rank": rank, "mode": run["mode"],
-                         "difficulty": run["difficulty"]})
+        reply = {"ok": True, "rank": rank, "mode": run["mode"], "difficulty": run["difficulty"]}
+        if run["day"]:
+            reply["day"] = run["day"]
+        self._send(200, reply)
 
     def log_message(self, fmt, *args):
         pass  # nginx already logs access; errors go to stderr explicitly

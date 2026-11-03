@@ -9,6 +9,7 @@ SQLite never creates files the service cannot open:
 
 Commands
     top     [-m classic|timeattack] [-d 0|1|2] [-n 20]   best scores of a board
+    top     -m daily [--day YYYY-MM-DD]                 a day's daily challenge (default today)
     recent  [-n 20]                                     latest submissions
     show    ID                                          one score in full
     delete  ID [ID ...]                                 remove scores
@@ -73,7 +74,8 @@ def print_rows(rows):
     print(f"{'id':>6}  {'date (UTC)':16}  {'board':16}  {'name':16}  {'score':>9}  "
           f"{'wave':>4}  {'time':>6}  {'pts/s':>6}  {'combo':>5}  device")
     for r in rows:
-        board = f"{r['mode']}/{DIFFS.get(r['difficulty'], r['difficulty'])}"
+        board = (f"daily/{r['day']}" if r["mode"] == "daily"
+                 else f"{r['mode']}/{DIFFS.get(r['difficulty'], r['difficulty'])}")
         secs = r["run_time"]
         print(f"{r['id']:>6}  {fmt_time(r['created_ts']):16}  {board:16}  {r['name']:16}  "
               f"{r['score']:>9}  {r['wave']:>4}  {secs // 60:>3}:{secs % 60:02d}  "
@@ -90,6 +92,13 @@ def confirm(args, what):
 
 
 def cmd_top(conn, args):
+    if args.mode == "daily":
+        day = args.day or lb.utc_day(time.time())
+        print(f"daily challenge {day} (UTC)")
+        print_rows(conn.execute(
+            "SELECT * FROM scores WHERE mode = 'daily' AND day = ? ORDER BY score DESC, id LIMIT ?",
+            (day, args.n)).fetchall())
+        return
     print_rows(conn.execute(
         "SELECT * FROM scores WHERE mode = ? AND difficulty = ? ORDER BY score DESC, id LIMIT ?",
         (args.mode, args.difficulty, args.n)).fetchall())
@@ -217,6 +226,7 @@ def build_parser():
     p.add_argument("-m", "--mode", choices=lb.MODES, default="classic")
     p.add_argument("-d", "--difficulty", type=int, choices=(0, 1, 2), default=1)
     p.add_argument("-n", type=int, default=20)
+    p.add_argument("--day", type=lambda v: v if lb.DAY_RE.match(v) else sys.exit(f"bad day {v!r}"))
     p = sub.add_parser("recent")
     p.add_argument("-n", type=int, default=20)
     p = sub.add_parser("show")

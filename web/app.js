@@ -19,8 +19,9 @@
     };
     var PHASE = { PLAYING: 0, ANNOUNCE: 1, VICTORY: 2, GAME_OVER: 3, MENU: 4 };
     var OUTCOME = { VICTORY: 0, GAME_OVER: 1, TIME_UP: 2 };
-    var MODES = ['classic', 'timeattack'];
-    var MODE_LABELS = ['Clasic', 'Time Attack'];
+    var MODES = ['classic', 'timeattack', 'daily'];          // = RunMode in src/web_bridge.h
+    var MODE_LABELS = ['Clasic', 'Time Attack', 'Provocarea zilei'];
+    var DAILY = 2;
     var DIFF_LABELS = ['Ușor', 'Normal', 'Greu'];
     var API = '/api/v2';
     var NAME_RE = /^[A-Za-z0-9 _.\-]{1,16}$/;
@@ -106,7 +107,7 @@
     var PAGE_TITLE = document.title;
     // Elements whose text this file writes itself: the page walker skips
     // them and they are re-rendered when the language changes.
-    var DYNAMIC = '#load-text, #global-stats, #build-label, #btn-lang, #error-title, #error-text, ' +
+    var DYNAMIC = '#load-text, #global-stats, #build-label, #btn-lang, #error-title, #error-text, #daily-sub, ' +
                   '#end-title, #end-sub, #end-score, #end-stats, #end-unlocks, #submit-status, #btn-submit, ' +
                   '#scores-body, #scores-status, #profile-since, #profile-stats, #ach-list, #ach-count, ' +
                   '#fps, #volume-out, #toasts, #btn-pause, #btn-fullscreen';
@@ -197,6 +198,40 @@
             store.set(KEYS.player, k);
         }
         return k;
+    }
+
+    // ── Daily challenge ───────────────────────────────────────────────
+    // Everyone plays the same world on a given UTC day: its seed is a hash
+    // of the date, and the server ranks a daily run against that day only.
+    function utcDay(offsetDays) {
+        return new Date(Date.now() - (offsetDays || 0) * 86400000).toISOString().slice(0, 10);
+    }
+    function dailySeed(day) {                       // FNV-1a, never 0 (0 = classic world)
+        var h = 0x811c9dc5;
+        for (var i = 0; i < day.length; i++) { h ^= day.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+        return (h >>> 0) || 1;
+    }
+    function fmtDay(day) {
+        try {
+            return new Intl.DateTimeFormat(lang === 'en' ? 'en-US' : 'ro-RO',
+                { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(day + 'T12:00:00Z'));
+        } catch (e) { return day; }
+    }
+    function untilNextDay() {
+        var mins = Math.max(1, Math.ceil((86400000 - Date.now() % 86400000) / 60000));
+        return mins >= 60 ? Math.floor(mins / 60) + ' h ' + (mins % 60) + ' min' : mins + ' min';
+    }
+    function bestLocalDaily(day) {
+        var list = store.get(KEYS.scores, []);
+        return (Array.isArray(list) ? list : []).reduce(function (m, x) {
+            return x.mode === DAILY && x.day === day ? Math.max(m, x.score | 0) : m;
+        }, 0);
+    }
+    function renderDailyButton() {
+        var best = bestLocalDaily(utcDay());
+        $('#daily-sub').textContent = best
+            ? t('Recordul tău azi: {score} · nouă hartă în {time}', { score: fmt(best), time: untilNextDay() })
+            : t('Aceeași lume pentru toți · nouă hartă în {time}', { time: untilNextDay() });
     }
 
     // ── State ─────────────────────────────────────────────────────────
@@ -494,8 +529,13 @@
         $all('dialog[open]').forEach(function (d) { delete d.dataset.autoPaused; d.close(); });
         state.mode = mode;
         setInRun(true);
-        call('set_difficulty', settings.difficulty);
-        call('start_run', mode);           // fires tornado:runstart
+        if (mode === DAILY) {
+            state.dailyDay = utcDay();
+            call('start_daily', dailySeed(state.dailyDay));   // fires tornado:runstart
+        } else {
+            call('set_difficulty', settings.difficulty);
+            call('start_run', mode);           // fires tornado:runstart
+        }
         setPaused(false);
         resizeCanvas();
         canvas.focus({ preventScroll: true });
@@ -509,6 +549,7 @@
         state.run = null;
         releaseWakeLock();
         loadGlobalStats();
+        renderDailyButton();
         $('#btn-play').focus({ preventScroll: true });
     }
 
@@ -528,15 +569,21 @@
     // Server run token, requested as soon as the game reports a new run.
     window.addEventListener('tornado:runstart', function (e) {
         var mode = e.detail.mode | 0, difficulty = e.detail.difficulty | 0;
-        var run = { id: null, mode: mode, difficulty: difficulty, submitted: false };
+        var run = { id: null, mode: mode, difficulty: difficulty, submitted: false, error: '' };
+        var body = { mode: MODES[mode], difficulty: difficulty };
+        if (mode === DAILY) body.day = run.day = state.dailyDay;
         run.promise = fetch(API + '/runs', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode: MODES[mode], difficulty: difficulty }),
+            body: JSON.stringify(body),
             credentials: 'same-origin'
-        }).then(function (r) { return r.ok ? r.json() : null; })
-          .then(function (j) { if (j && j.run) run.id = j.run; return run; })
-          .catch(function () { return run; });
+        }).then(function (r) {
+            return r.json().catch(function () { return {}; }).then(function (j) {
+                if (r.ok && j.run) run.id = j.run;
+                else run.error = j.error || 'unavailable';
+                return run;
+            });
+        }).catch(function () { return run; });
         state.run = run;
     });
 
@@ -557,11 +604,14 @@
         var list = store.get(KEYS.scores, []);
         if (!Array.isArray(list)) list = [];
         var board = list.filter(function (x) {
-            return (x.mode || 0) === st.mode && (x.difficulty == null ? 1 : x.difficulty) === st.difficulty;
+            return (x.mode || 0) === st.mode && (x.difficulty == null ? 1 : x.difficulty) === st.difficulty &&
+                   (st.mode !== DAILY || x.day === st.day);
         });
         var best = board.reduce(function (m, x) { return Math.max(m, x.score | 0); }, 0);
-        list.push({ score: st.score, wave: st.wave, mode: st.mode, difficulty: st.difficulty,
-                    date: new Date().toISOString().slice(0, 10) });
+        var entry = { score: st.score, wave: st.wave, mode: st.mode, difficulty: st.difficulty,
+                      date: new Date().toISOString().slice(0, 10) };
+        if (st.mode === DAILY) entry.day = st.day;
+        list.push(entry);
         list.sort(function (a, b) { return b.score - a.score; });
         store.set(KEYS.scores, list.slice(0, 20));
         return st.score > best;
@@ -609,7 +659,12 @@
           test: total('runs', 25), progress: count('runs', 25) },
         { id: 'streak3', title: 'Sezonul uraganelor', desc: 'Joci 3 zile la rând.',
           test: total('streak', 3), progress: count('streak', 3) },
+        { id: 'daily1', title: 'Provocare acceptată', desc: 'Termini o provocare a zilei.',
+          test: function (s) { return s.mode === DAILY; } },
+        { id: 'daily7', title: 'Cronicarul furtunilor', desc: 'Joci provocarea zilei în 7 zile diferite.',
+          test: total('dailyDays', 7), progress: count('dailyDays', 7) },
         { id: 'global', title: 'Pe hartă', desc: 'Trimiți un scor în clasamentul global.' },
+        { id: 'daily_podium', title: 'Pe podium', desc: 'Intri în primii 3 la provocarea zilei.' },
         { id: 'top10', title: 'Top 10', desc: 'Intri în primii 10 ai unui clasament global.' }
     ];
 
@@ -625,7 +680,8 @@
         var p = store.get(KEYS.profile, null);
         if (!p || typeof p !== 'object') p = {};
         var base = { runs: 0, playSeconds: 0, bestClassic: 0, bestTimeAttack: 0, bestWave: 0, bestCombo: 0,
-                     victories: 0, streak: 0, firstDay: '', lastDay: '', unlocked: {} };
+                     victories: 0, streak: 0, firstDay: '', lastDay: '', unlocked: {},
+                     bestDaily: 0, dailyDays: 0, lastDailyDay: '' };
         COUNTERS.forEach(function (k) { base[k] = 0; });
         Object.keys(base).forEach(function (k) {
             if (k === 'unlocked' ? typeof p[k] !== 'object' || !p[k]
@@ -654,8 +710,11 @@
         if (st.mode === 0) {
             p.bestClassic = Math.max(p.bestClassic, st.score);
             p.bestWave = Math.max(p.bestWave, st.wave);
-        } else {
+        } else if (st.mode === 1) {
             p.bestTimeAttack = Math.max(p.bestTimeAttack, st.score);
+        } else if (st.mode === DAILY) {
+            p.bestDaily = Math.max(p.bestDaily, st.score);
+            if (p.lastDailyDay !== st.day) { p.dailyDays++; p.lastDailyDay = st.day; }
         }
         p.bestCombo = Math.max(p.bestCombo, st.maxCombo);
         if (st.outcome === OUTCOME.VICTORY) p.victories++;
@@ -725,7 +784,8 @@
             ['Obiecte distruse', p.destroyed], ['Case', p.houses], ['Copaci', p.trees],
             ['Mașini', p.vehicles], ['Animale', p.animals], ['Păsări', p.birds],
             ['Record clasic', p.bestClassic], ['Record Time Attack', p.bestTimeAttack],
-            ['Val maxim', p.bestWave], ['Combo maxim', '×' + p.bestCombo], ['Zile la rând', p.streak]
+            ['Val maxim', p.bestWave], ['Combo maxim', '×' + p.bestCombo], ['Zile la rând', p.streak],
+            ['Provocări zilnice', p.dailyDays], ['Record la provocare', p.bestDaily]
         ];
         var grid = $('#profile-stats');
         grid.textContent = '';
@@ -767,6 +827,11 @@
         var outcome = e.detail.outcome | 0;
         var st = readStats();
         st.outcome = outcome;
+        if (st.mode === DAILY) st.day = (state.run && state.run.day) || state.dailyDay || utcDay();
+        // The leaderboard opens next on the board this run belongs to.
+        lb.mode = MODES[st.mode];
+        if (st.mode === DAILY) lb.day = st.day === utcDay(1) ? '1' : '0';
+        else lb.difficulty = String(st.difficulty);
         state.lastEnd = st;
         var record = saveLocal(st);
         var unlocked = recordRun(st);
@@ -794,7 +859,7 @@
     function renderEnd(st, record) {
         var dlg = $('#dlg-end');
         var title, sub;
-        if (st.outcome === OUTCOME.TIME_UP) { title = t('Timp expirat'); sub = t('Time Attack · 3 minute'); }
+        if (st.outcome === OUTCOME.TIME_UP) { title = t('Timp expirat'); sub = st.mode === DAILY ? '' : t('Time Attack · 3 minute'); }
         else if (st.outcome === OUTCOME.VICTORY) { title = t('Victorie!'); sub = t('Toate cele 10 valuri au fost complete'); }
         else {
             title = 'Game over';
@@ -803,7 +868,7 @@
         dlg.classList.toggle('victory', st.outcome !== OUTCOME.GAME_OVER);
         dlg.classList.toggle('gameover', st.outcome === OUTCOME.GAME_OVER);
         $('#end-title').textContent = title;
-        $('#end-sub').textContent = sub + ' · ' + boardLabel(st.mode, st.difficulty);
+        $('#end-sub').textContent = (sub ? sub + ' · ' : '') + boardLabel(st.mode, st.difficulty, st.day);
         $('#end-score').textContent = fmt(st.score);
         $('#end-record').hidden = !record;
 
@@ -841,6 +906,7 @@
         if (!run) { setSubmitUi('ready', t('Clasamentul global nu este disponibil acum.'), 'err'); return; }
         setSubmitUi('busy', '');
         run.promise.then(function () {
+            if (run.error === 'wrong day') throw { wrongDay: true };
             if (!run.id) throw { offline: true };
             return fetch(API + '/scores', {
                 method: 'POST',
@@ -861,9 +927,12 @@
                 run.submitted = true;
                 if (name) setPlayerName(name);
                 setSubmitUi('done', t('Trimis! Locul #{rank} în clasamentul {board}.',
-                    { rank: res.body.rank, board: boardLabel(st.mode, st.difficulty) }), 'ok');
+                    { rank: res.body.rank, board: boardLabel(st.mode, st.difficulty, st.day) }), 'ok');
                 scoresCache = {};
-                unlockLater(res.body.rank <= 10 ? ['global', 'top10'] : ['global']);
+                var earned = ['global'];
+                if (res.body.rank <= 10) earned.push('top10');
+                if (st.mode === DAILY && res.body.rank <= 3) earned.push('daily_podium');
+                unlockLater(earned);
             } else if (res.status === 409 && err === 'name taken') {
                 setSubmitUi('ready', t('Numele este rezervat de alt jucător. Alege altul.'), 'err');
                 $('#end-name').focus();
@@ -887,6 +956,10 @@
                 setSubmitUi('ready', t('Serverul nu răspunde. Încearcă din nou.'), 'err');
             }
         }).catch(function (e) {
+            if (e && e.wrongDay) {
+                setSubmitUi('done', t('Ceasul dispozitivului nu se potrivește cu ziua provocării, așa că scorul nu poate fi trimis.'), 'err');
+                return;
+            }
             setSubmitUi(e && e.offline ? 'done' : 'ready',
                 t(e && e.offline ? 'Ești offline: scorul a rămas salvat pe acest dispozitiv.'
                                  : 'Eroare de rețea. Încearcă din nou.'), 'err');
@@ -911,15 +984,21 @@
     });
     $('#btn-share').addEventListener('click', share);
 
-    function boardLabel(mode, diff) { return t(MODE_LABELS[mode]) + ' · ' + t(DIFF_LABELS[diff]); }
+    function boardLabel(mode, diff, day) {
+        if (mode === DAILY) return t(MODE_LABELS[mode]) + ' · ' + fmtDay(day || utcDay());
+        return t(MODE_LABELS[mode]) + ' · ' + t(DIFF_LABELS[diff]);
+    }
 
     function share() {
         var st = state.lastEnd;
         var score = st ? st.score : stat(STAT.SCORE);
         var mode = st ? st.mode : state.mode;
         var diff = st ? st.difficulty : settings.difficulty;
-        var text = t('Am făcut {score} puncte în Tornada 3D ({mode}, {diff}). Poți mai mult?',
-                     { score: fmt(score), mode: t(MODE_LABELS[mode]), diff: t(DIFF_LABELS[diff]) });
+        var text = mode === DAILY
+            ? t('Am făcut {score} puncte la provocarea zilei din Tornada 3D ({date}). Poți mai mult?',
+                { score: fmt(score), date: fmtDay((st && st.day) || utcDay()) })
+            : t('Am făcut {score} puncte în Tornada 3D ({mode}, {diff}). Poți mai mult?',
+                { score: fmt(score), mode: t(MODE_LABELS[mode]), diff: t(DIFF_LABELS[diff]) });
         var url = location.origin + '/';
         if (navigator.share) {
             navigator.share({ title: t('Tornada 3D'), text: text, url: url }).catch(function () {});
@@ -931,7 +1010,7 @@
     }
 
     // ── Leaderboard dialog ────────────────────────────────────────────
-    var lb = { tab: 'global', mode: 'classic', difficulty: String(settings.difficulty), period: 'all' };
+    var lb = { tab: 'global', mode: 'classic', difficulty: String(settings.difficulty), period: 'all', day: '0' };
     var scoresCache = {};
 
     function setSegmented(group, value) {
@@ -964,7 +1043,8 @@
             [r.rank || i + 1, name, fmt(r.score), r.wave, r.date || ''].forEach(function (v, c) {
                 var td = document.createElement('td');
                 td.textContent = v;
-                if (c === 2 || c === 3) td.className = 'num';
+                if (c === 2) td.className = 'num';
+                if (c === 3) td.className = 'num wave';
                 if (c === 4) td.className = 'date';
                 tr.appendChild(td);
             });
@@ -975,12 +1055,18 @@
     function loadScores() {
         var status = $('#scores-status');
         var me = playerName();
+        var daily = lb.mode === 'daily';
+        var day = utcDay(+lb.day);
         $('#scores-panel').setAttribute('aria-labelledby', lb.tab === 'global' ? 'tab-global' : 'tab-local');
-        $('[data-filter="period"]').hidden = lb.tab !== 'global';
+        $('[data-filter="period"]').hidden = lb.tab !== 'global' || daily;
+        $('[data-filter="difficulty"]').hidden = daily;
+        $('[data-filter="day"]').hidden = !daily;
+        $('table.scores').classList.toggle('timed', lb.mode !== 'classic');
         if (lb.tab === 'local') {
             var list = store.get(KEYS.scores, []);
             if (!Array.isArray(list)) list = [];
             var rows = list.filter(function (x) {
+                if (daily) return x.mode === DAILY && x.day === day;
                 return MODES[x.mode || 0] === lb.mode && String(x.difficulty == null ? 1 : x.difficulty) === lb.difficulty;
             }).slice(0, 10).map(function (x, i) {
                 return { rank: i + 1, name: me || t('Tu'), score: x.score, wave: x.wave, date: x.date };
@@ -989,7 +1075,9 @@
             status.textContent = rows.length ? '' : t('Niciun scor pe acest dispozitiv pentru filtrul ales.');
             return;
         }
-        var key = [lb.mode, lb.difficulty, lb.period].join('|');
+        var key = daily ? 'daily|' + day : [lb.mode, lb.difficulty, lb.period].join('|');
+        var url = daily ? API + '/scores?mode=daily&day=' + day + '&limit=25'
+                        : API + '/scores?mode=' + lb.mode + '&difficulty=' + lb.difficulty + '&period=' + lb.period + '&limit=25';
         var cached = scoresCache[key];
         if (cached && Date.now() - cached.at < 15000) {
             renderRows(cached.rows, me);
@@ -998,23 +1086,28 @@
         }
         renderRows([], null);
         status.textContent = t('Se încarcă…');
-        fetch(API + '/scores?mode=' + lb.mode + '&difficulty=' + lb.difficulty + '&period=' + lb.period + '&limit=25',
-              { credentials: 'same-origin' })
+        fetch(url, { credentials: 'same-origin' })
             .then(function (r) { if (!r.ok) throw r.status; return r.json(); })
             .then(function (j) {
                 var rows = (j && Array.isArray(j.scores)) ? j.scores : [];
                 scoresCache[key] = { at: Date.now(), rows: rows };
-                if ([lb.mode, lb.difficulty, lb.period].join('|') !== key) return;
+                if (url !== currentUrl()) return;            // filters changed meanwhile
                 renderRows(rows, me);
                 status.textContent = rows.length ? '' : t('Încă nu există scoruri aici. Fii primul!');
             })
             .catch(function () { status.textContent = t('Clasamentul nu este disponibil momentan.'); });
     }
 
+    function currentUrl() {
+        return lb.mode === 'daily' ? API + '/scores?mode=daily&day=' + utcDay(+lb.day) + '&limit=25'
+            : API + '/scores?mode=' + lb.mode + '&difficulty=' + lb.difficulty + '&period=' + lb.period + '&limit=25';
+    }
+
     function openScores() {
         setSegmented($('[data-filter="mode"]'), lb.mode);
         setSegmented($('[data-filter="difficulty"]'), lb.difficulty);
         setSegmented($('[data-filter="period"]'), lb.period);
+        setSegmented($('[data-filter="day"]'), lb.day);
         showDialog('dlg-scores');
         loadScores();
     }
@@ -1136,6 +1229,7 @@
     // ── Buttons ───────────────────────────────────────────────────────
     $('#btn-play').addEventListener('click', function () { startRun(0); });
     $('#btn-timeattack').addEventListener('click', function () { startRun(1); });
+    $('#btn-daily').addEventListener('click', function () { startRun(DAILY); });
     $('#btn-scores').addEventListener('click', openScores);
     $('#btn-profile').addEventListener('click', openProfile);
     $('#btn-hud-scores').addEventListener('click', openScores);
@@ -1324,6 +1418,7 @@
         if (!changed) return;
         renderGlobalStats();
         renderBuildLabel();
+        renderDailyButton();
         if (state.loadText && !state.ready) $('#load-text').textContent = t(state.loadText[0], state.loadText[1]);
         if ($('#dlg-profile').open) renderProfile();
         if ($('#dlg-scores').open) loadScores();
@@ -1335,6 +1430,7 @@
         $('#loader').classList.add('done');
         $('#btn-play').disabled = false;
         $('#btn-timeattack').disabled = false;
+        $('#btn-daily').disabled = false;
         if (document.activeElement === document.body) $('#btn-play').focus({ preventScroll: true });
         resizeCanvas();
     }
@@ -1347,6 +1443,8 @@
     function boot() {
         applyLanguage();
         renderBuildLabel();
+        renderDailyButton();
+        setInterval(function () { if (!state.inRun) renderDailyButton(); }, 30000);
         syncSettingsUi();
         initTouch();
         loadGlobalStats();

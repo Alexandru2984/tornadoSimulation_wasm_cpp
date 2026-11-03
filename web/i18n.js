@@ -270,5 +270,25 @@ window.TORNADO_EN = {
     "Tornada crește când distruge și slăbește când stă degeaba — dacă rămâne prea mică, se risipește.": "The tornado grows as it destroys and weakens when idle — if it gets too small, it dies out.",
     "Prinde power-up-urile: viteză, mărime ×2, magnet, scut, scor ×2 și înghețare. Dispar dacă le ignori.": "Grab the power-ups: speed, size ×2, magnet, shield, score ×2 and freeze. They vanish if you ignore them.",
     "10 valuri pentru victorie, apoi mod infinit. În Time Attack contează doar scorul din 3 minute.": "10 waves for victory, then endless mode. In Time Attack only the 3-minute score counts.",
-    "Am înțeles": "Got it"
+    "Am înțeles": "Got it",
+
+    "Provocarea zilei": "Daily challenge",
+    "Aceeași lume pentru toți · nouă hartă în {time}": "Same world for everyone · new map in {time}",
+    "Recordul tău azi: {score} · nouă hartă în {time}": "Your best today: {score} · new map in {time}",
+    "Provocarea zilei: în fiecare zi o lume nouă, aceeași pentru toți jucătorii, cu clasamentul ei.": "Daily challenge: a new world every day, the same for every player, with its own leaderboard.",
+    "Provocarea zilei: 3 minute pe harta zilei, aceeași pentru toți. Clasamentul ei se reia în fiecare zi la miezul nopții (UTC).": "Daily challenge: 3 minutes on the day's map, the same for everyone. Its leaderboard starts over every day at midnight (UTC).",
+    "Provocarea zilei: aceeași lume și același start pentru toți, 3 minute, dificultate Normal.": "Daily challenge: same world and same start for everyone, 3 minutes, Normal difficulty.",
+    "Zilnic": "Daily",
+    "Ziua": "Day",
+    "Ieri": "Yesterday",
+    "Am făcut {score} puncte la provocarea zilei din Tornada 3D ({date}). Poți mai mult?": "I scored {score} points in the Tornado 3D daily challenge ({date}). Can you beat that?",
+    "Ceasul dispozitivului nu se potrivește cu ziua provocării, așa că scorul nu poate fi trimis.": "Your device's clock doesn't match the challenge's day, so this score can't be submitted.",
+    "Provocări zilnice": "Daily challenges",
+    "Record la provocare": "Daily challenge best",
+    "Provocare acceptată": "Challenge accepted",
+    "Termini o provocare a zilei.": "Finish a daily challenge.",
+    "Cronicarul furtunilor": "Storm chronicler",
+    "Joci provocarea zilei în 7 zile diferite.": "Play the daily challenge on 7 different days.",
+    "Pe podium": "On the podium",
+    "Intri în primii 3 la provocarea zilei.": "Finish in the top 3 of a daily challenge."
 };

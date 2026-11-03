@@ -15,6 +15,8 @@ Emscripten/WASM). Live at **https://tornado.micutu.com**.
 - Infinite procedurally generated world: terrain, water, houses, trees, fences, cars, poles
 - 10 waves with EF0–EF5 tornado scales, combo multiplier up to ×5, endless mode after victory
 - Time Attack (3-minute score chase) and 3 difficulty levels, locked for the whole run
+- Daily challenge: a different world every UTC day (seeded terrain and objects), the same
+  start, light and power-up sequence for everyone, with its own daily leaderboard
 - 6 power-ups (speed, size ×2, magnet, shield, score ×2, freeze) that expire if ignored
 - Cows, sheep, cars and birds that flee; day/night cycle; rain, lightning and thunder
 - Procedural Web Audio sound with a master volume
@@ -131,9 +133,10 @@ behind nginx.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/v2/health` | liveness |
-| POST | `/api/v2/runs` | `{mode, difficulty}` → `{run}`: one-time token issued when a run starts |
+| POST | `/api/v2/runs` | `{mode, difficulty}` → `{run}`: one-time token issued when a run starts; daily runs also send `day` (UTC) |
 | POST | `/api/v2/scores` | `{run, name, score, wave, player, stats}` → `{rank}` |
 | GET | `/api/v2/scores?mode&difficulty&period&limit` | best score per name |
+| GET | `/api/v2/scores?mode=daily&day=YYYY-MM-DD` | one day's daily challenge (default today, UTC) |
 | GET | `/api/v2/stats` | global totals (cached 60 s) |
 | GET | `/api/scores` | legacy read-only list; legacy POST answers 410 |
 
@@ -142,6 +145,10 @@ plausible for the elapsed server time (points per object and combo limits mirror
 `src/constants.h`; a test keeps them in sync). Names are claimed per device with a secret player
 key (export/import it under Settings). Rate limits are per client (IPv6 grouped by /64), and
 browser POSTs from other origins are refused (CSRF).
+
+The daily challenge's world comes from a hash of the UTC date, computed by the page; the server
+only checks that the day a daily run claims is its own (±5 minutes around midnight) and ranks the
+run on that day's board, even if it is submitted after midnight.
 
 These checks make forging a score much harder; they cannot make it impossible, because the game
 runs on the player's machine. Treat the leaderboard as a fun ranking, not proof.
@@ -154,6 +161,7 @@ Environment: `TORNADO_DB`, `TORNADO_HOST`, `TORNADO_PORT`, `TORNADO_ORIGINS`.
 
 ```bash
 tornado-lbadmin top -m classic -d 1       # board with time, points/second, device id
+tornado-lbadmin top -m daily --day 2026-11-03   # one day's daily challenge
 tornado-lbadmin recent -n 30              # latest submissions
 tornado-lbadmin show 123                  # one score + what else that device sent
 tornado-lbadmin delete 123 124

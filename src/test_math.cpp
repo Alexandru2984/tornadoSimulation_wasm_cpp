@@ -245,6 +245,39 @@ TEST(terrain_height_bounded_and_finite) {
     }
 }
 
+// The classic world (seed 0) must never change by accident: scores and
+// muscle memory depend on it. Values recorded before world seeds existed.
+TEST(classic_world_is_unchanged) {
+    const float golden[][3] = {
+        {40.0f, -75.0f, 0.370006f}, {-130.0f, 210.0f, -2.107702f}, {512.0f, 512.0f, -0.329167f},
+        {-900.0f, 33.0f, 1.173089f}, {77.0f, 1500.0f, 1.462182f},
+    };
+    g_worldSeed = 0;
+    for (auto& g : golden) ASSERT_TRUE(fabsf(getTerrainHeight(g[0], g[1]) - g[2]) < 1e-4f);
+}
+
+// Daily worlds: a different landscape, still starting on dry flat ground.
+TEST(daily_worlds_differ_and_keep_a_dry_spawn) {
+    const uint32_t seeds[] = {1u, 20261103u, 0xDEADBEEFu};
+    std::vector<float> classic;
+    g_worldSeed = 0;
+    for (int i = 0; i < 100; ++i) classic.push_back(getTerrainHeight(i * 13.7f - 600.0f, i * 29.3f - 900.0f));
+    for (uint32_t seed : seeds) {
+        g_worldSeed = seed;
+        int differ = 0;
+        for (int i = 0; i < 100; ++i) {
+            float h = getTerrainHeight(i * 13.7f - 600.0f, i * 29.3f - 900.0f);
+            ASSERT_TRUE(std::isfinite(h) && h > -10.0f && h < 10.0f);
+            if (fabsf(h - classic[i]) > 1e-3f) ++differ;
+        }
+        ASSERT_TRUE(differ > 90);
+        for (float x = -6.0f; x <= 6.0f; x += 1.5f)
+            for (float z = -6.0f; z <= 6.0f; z += 1.5f)
+                ASSERT_TRUE(getTerrainHeight(x, z) > WATER_LEVEL + 0.2f);
+    }
+    g_worldSeed = 0;
+}
+
 TEST(hash_noise_range) {
     for (int i = -500; i < 500; ++i) {
         float n = hashNoise(i, i * 3 + 7);

@@ -390,6 +390,65 @@ class Api(unittest.TestCase):
         _, body, _ = self.req("GET", "/api/v2/scores?mode=timeattack")
         self.assertIn("Speedy", [s["name"] for s in body["scores"]])
 
+    def start_daily(self, day=None):
+        day = day or lb.utc_day(self.now)
+        code, body, _ = self.req("POST", "/api/v2/runs", {"mode": "daily", "difficulty": 1, "day": day})
+        self.assertEqual(code, 201, body)
+        self.assertEqual(body["day"], day)
+        return body["run"]
+
+    def test_daily_flow(self):
+        today = lb.utc_day(self.now)
+        run = self.start_daily()
+        self.now += 100
+        self.assertEqual(self.submit(run, wave=1)[0], 422)          # 3-minute rule
+        run = self.start_daily()
+        self.now += 181
+        code, body, _ = self.submit(run, wave=1, name="Daily1", player="y" * 32)
+        self.assertEqual((code, body["day"], body["rank"]), (200, today, 1))
+        _, body, _ = self.req("GET", "/api/v2/scores?mode=daily")
+        self.assertEqual(body["day"], today)
+        self.assertIn("Daily1", [r["name"] for r in body["scores"]])
+        _, body, _ = self.req("GET", "/api/v2/scores?mode=daily&day=2020-01-01")
+        self.assertEqual(body["scores"], [])
+        # Daily scores stay off the regular boards.
+        _, body, _ = self.req("GET", "/api/v2/scores?mode=timeattack")
+        self.assertNotIn("Daily1", [r["name"] for r in body["scores"]])
+
+    def test_daily_run_rules(self):
+        today = lb.utc_day(self.now)
+        bad = [{"mode": "daily", "difficulty": 0, "day": today},          # always Normal
+               {"mode": "daily", "difficulty": 1},                        # day required
+               {"mode": "daily", "difficulty": 1, "day": "2020-01-01"},   # wrong day
+               {"mode": "daily", "difficulty": 1, "day": 20261103}]
+        codes = [self.req("POST", "/api/v2/runs", b)[0] for b in bad]
+        self.assertEqual(codes, [400, 422, 422, 422])
+        self.assertEqual(self.req("GET", "/api/v2/scores?mode=daily&day=x")[0], 400)
+
+    def test_daily_run_belongs_to_the_day_it_started(self):
+        import calendar
+        midnight = calendar.timegm((2027, 3, 1, 0, 0, 0))
+        self.now = midnight - 120                                     # 23:58 UTC
+        day1 = lb.utc_day(self.now)
+        # A client clock a little ahead already says it is tomorrow: accepted.
+        self.start_daily(lb.utc_day(midnight))
+        run = self.start_daily(day1)
+        self.now = midnight + 180                                     # 00:03, next day
+        self.assertEqual(self.submit(run, wave=1, name="Owl", player="w" * 32)[0], 200)
+        _, body, _ = self.req("GET", f"/api/v2/scores?mode=daily&day={day1}")
+        self.assertIn("Owl", [r["name"] for r in body["scores"]])
+        _, body, _ = self.req("GET", "/api/v2/scores?mode=daily")
+        self.assertEqual((body["day"], body["scores"]), (lb.utc_day(midnight), []))
+
+    def test_daily_rank_is_per_day(self):
+        run = self.start_daily()
+        self.now += 181
+        self.assertEqual(self.submit(run, wave=1, score=9000, name="Big", player="b" * 32)[1]["rank"], 1)
+        self.now += 86400
+        run = self.start_daily()
+        self.now += 181
+        self.assertEqual(self.submit(run, wave=1, score=3000, name="Small", player="m" * 32)[1]["rank"], 1)
+
     def test_legacy_endpoints(self):
         code, body, _ = self.req("GET", "/api/scores")
         self.assertEqual(code, 200)
@@ -447,6 +506,28 @@ class Migration(unittest.TestCase):
                 lb.DB_PATH = old
             self.assertEqual(rows[0]["score"], 47318)
             self.assertEqual(rows[0]["date"], "2026-07-07")
+
+
+    def test_runs_table_gets_a_day_column(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "v2.db"
+            c = sqlite3.connect(path)
+            c.execute("""CREATE TABLE runs (id TEXT PRIMARY KEY, mode TEXT NOT NULL,
+                         difficulty INTEGER NOT NULL, started REAL NOT NULL,
+                         used INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID""")
+            c.execute("INSERT INTO runs VALUES ('r' , 'classic', 1, 1.0, 0)")
+            c.commit()
+            c.close()
+            old = lb.DB_PATH
+            lb.DB_PATH = path
+            try:
+                lb.init_db()
+                c = sqlite3.connect(path)
+                self.assertEqual(c.execute("SELECT day FROM runs WHERE id = 'r'").fetchone(), ("",))
+                c.close()
+            finally:
+                lb.DB_PATH = old
 
 
 class WalFiles(unittest.TestCase):

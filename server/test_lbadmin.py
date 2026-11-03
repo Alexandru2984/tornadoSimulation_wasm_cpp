@@ -72,6 +72,19 @@ class LbAdmin(unittest.TestCase):
         self.assertNotIn("Honest", out)
         self.assertIn("Honest", self.run_cli("recent", "-n", "3") + self.run_cli("show", "4"))
 
+    def test_daily_board(self):
+        c = sqlite3.connect(self.db)
+        c.executemany("INSERT INTO scores (name, score, wave, mode, difficulty, created_ts, day)"
+                      " VALUES (?, ?, 1, 'daily', 1, 1800000000, ?)",
+                      [("Monday", 3000, "2027-03-01"), ("Tuesday", 4000, "2027-03-02")])
+        c.commit()
+        c.close()
+        out = self.run_cli("top", "-m", "daily", "--day", "2027-03-01")
+        self.assertIn("Monday", out)
+        self.assertIn("daily/2027-03-01", out)
+        self.assertNotIn("Tuesday", out)
+        self.assertNotIn("Cheater", out)
+
     def test_ban_by_name_takes_the_device_and_its_other_names(self):
         self.run_cli("ban", "--name", "cheater", "--reason", "impossible score")
         self.assertEqual(self.names(), ["ANONIM", "Honest"])   # only the pre-tracking anon row survives

@@ -32,8 +32,9 @@ async function desktop(browser) {
     const ctx = await browser.newContext({ viewport: { width: 1366, height: 768 }, locale: 'ro-RO' });
     const page = await ctx.newPage();
     const problems = watch(page);
-    const runs = [];
+    const runs = [], runBodies = [];
     page.on('response', r => { if (r.url().endsWith('/api/v2/runs')) runs.push(r.status()); });
+    page.on('request', r => { if (r.url().endsWith('/api/v2/runs')) runBodies.push(JSON.parse(r.postData() || '{}')); });
 
     await page.goto(BASE + '/');
     await waitForEngine(page);
@@ -68,7 +69,10 @@ async function desktop(browser) {
     check(true, 'run end shows the results dialog');
     const chips = await page.$$eval('#end-unlocks .chip-gold', els => els.map(e => e.textContent));
     check(chips.includes('Prima furtună'), 'first finished run unlocks an achievement in the results dialog');
+    const tokensBefore = runBodies.length;
     await page.click('#btn-end-menu');
+    await page.waitForTimeout(600);
+    check(runBodies.length === tokensBefore, 'returning to the menu does not request a run token');
 
     await page.click('#btn-profile');
     await page.waitForSelector('#dlg-profile[open]', { timeout: 5000 });
@@ -79,6 +83,32 @@ async function desktop(browser) {
     await page.waitForSelector('#dlg-scores[open]', { timeout: 5000 });
     await page.waitForTimeout(500);
     check(true, 'leaderboard dialog opens');
+    await page.keyboard.press('Escape');
+
+    // Daily challenge: Normal difficulty whatever is selected, today's UTC day.
+    await page.click('#screen-start [data-setting="difficulty"] [data-value="2"]');
+    check(/Aceeași lume pentru toți/.test(await page.textContent('#daily-sub')), 'daily button shows its subtitle');
+    await page.click('#btn-daily');
+    await page.waitForFunction(() => document.body.classList.contains('in-run'), null, { timeout: 15000 });
+    await page.waitForTimeout(500);
+    const today = new Date().toISOString().slice(0, 10);
+    const daily = runBodies[runBodies.length - 1] || {};
+    check(daily.mode === 'daily' && daily.day === today && daily.difficulty === 1 &&
+          runs[runs.length - 1] === 201, 'daily run token: mode daily, today (UTC), Normal difficulty');
+    check(await page.evaluate(() => Module._get_run_stat(10) === 2 && Module._get_run_stat(11) === 1),
+        'game runs the daily mode on Normal');
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('tornado:runend', { detail: { outcome: 2 } })));
+    await page.waitForSelector('#dlg-end[open]', { timeout: 5000 });
+    const dailyChips = await page.$$eval('#end-unlocks .chip-gold', els => els.map(e => e.textContent));
+    check(/^Provocarea zilei · /.test(await page.textContent('#end-sub')) && dailyChips.includes('Provocare acceptată'),
+        'daily results: labelled with the day, achievement unlocked');
+    await page.click('#btn-end-menu');
+    await page.click('#btn-scores');
+    await page.waitForSelector('#dlg-scores[open]', { timeout: 5000 });
+    check(await page.evaluate(() => !document.querySelector('[data-filter="day"]').hidden &&
+              document.querySelector('[data-filter="difficulty"]').hidden &&
+              document.querySelector('[data-filter="mode"] [data-value="daily"]').getAttribute('aria-checked') === 'true'),
+        "leaderboard opens on the daily board after a daily run");
     await page.keyboard.press('Escape');
 
     check(problems.length === 0, 'desktop: no console errors, page errors or failed requests' +

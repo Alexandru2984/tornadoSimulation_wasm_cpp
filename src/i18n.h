@@ -19,6 +19,7 @@ enum HudStr {
     S_END_LINE1, S_END_LINE2, S_END_LINE3,
     S_TIME_UP, S_VICTORY, S_TA_3MIN, S_ALL_WAVES, S_MAX_AND_BEST,
     S_PRESS_C_R, S_PRESS_E, S_GAME_OVER, S_DISSIPATED, S_WAVE_REACHED, S_PRESS_R,
+    S_DAILY,
     S_COUNT
 };
 
@@ -57,6 +58,7 @@ static const char* const HUD_TEXT[S_COUNT][2] = {
     /* S_DISSIPATED    */ {"TORNADA S-A RISIPIT",             "THE TORNADO DIED OUT"},
     /* S_WAVE_REACHED  */ {"VAL ATINS %d/%d   RECORD %d",     "WAVE REACHED %d/%d   BEST %d"},
     /* S_PRESS_R       */ {"APASA R PENTRU RESTART",          "PRESS R TO RESTART"},
+    /* S_DAILY         */ {"PROVOCAREA ZILEI",                "DAILY CHALLENGE"},
 };
 
 inline int g_lang = LANG_RO;

@@ -463,3 +463,21 @@ body.touch .only-desktop, body:not(.touch) .only-touch { display: none; }
     cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
 }
 .link-btn:hover { color: var(--text); }
+
+/* Daily challenge button: full width under the two modes */
+.btn-daily {
+    grid-column: 1 / -1; justify-content: flex-start; gap: 12px; text-align: left;
+    min-height: 56px; padding: 0.55em 1.1em; white-space: normal;
+    border-color: rgba(255, 209, 102, 0.45);
+    background: linear-gradient(120deg, rgba(255, 209, 102, 0.14), rgba(92, 200, 255, 0.08));
+}
+.btn-daily:hover { border-color: var(--gold); background: linear-gradient(120deg, rgba(255, 209, 102, 0.22), rgba(92, 200, 255, 0.12)); }
+.btn-daily .icon { color: var(--gold); flex: none; width: 24px; height: 24px; }
+.daily-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.daily-text b { font-size: 1rem; }
+.daily-text small { font-size: 0.78rem; font-weight: 500; color: var(--muted); }
+.daily-text small:empty { display: none; }
+
+/* Timed boards (Time Attack, daily) have no waves */
+.scores.timed .wave { display: none; }
+.filters [data-filter="mode"] button, .filters [data-filter="day"] button { white-space: nowrap; padding-inline: 0.9em; }

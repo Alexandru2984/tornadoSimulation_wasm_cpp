@@ -28,6 +28,10 @@ enum RunStat {
     STAT_TORNADO_X10
 };
 
+// Run modes — keep in sync with MODES in web/app.js and the API's MODES.
+// Daily: Time Attack rules on the day's world, Normal difficulty, same start.
+enum RunMode { MODE_CLASSIC = 0, MODE_TIME_ATTACK = 1, MODE_DAILY = 2 };
+
 // How a run ended — keep in sync with the 'tornado:runend' handler in app.js
 enum RunEnd { RUN_END_VICTORY = 0, RUN_END_GAME_OVER = 1, RUN_END_TIME_UP = 2 };
 

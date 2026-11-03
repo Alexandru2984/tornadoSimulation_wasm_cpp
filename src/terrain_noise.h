@@ -9,9 +9,15 @@
 
 #include "constants.h"
 
+// World variant: 0 is the classic world, the daily challenge uses another
+// one per day. It is mixed into every hash (terrain here, object placement
+// in generateChunk), so a seed is a whole different world; 0 leaves the
+// classic one bit-for-bit unchanged.
+inline uint32_t g_worldSeed = 0;
+
 static float hashNoise(int ix, int iz) {
     // Use uint32_t for all arithmetic — signed overflow is undefined behaviour.
-    uint32_t n = (uint32_t)ix * 374761393u + (uint32_t)iz * 668265263u;
+    uint32_t n = (uint32_t)ix * 374761393u + (uint32_t)iz * 668265263u + g_worldSeed * 2246822519u;
     n = (n << 13) ^ n;
     return 1.0f - (float)((n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu) / 1073741824.0f;
 }
